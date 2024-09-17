@@ -1,7 +1,9 @@
 import numpy as np
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, precision_score, recall_score
+from sklearn.feature_selection import RFECV
 import torch,itertools
 import pandas as pd
+from sklearn.neighbors import KNeighborsClassifier as KNN
 
 from expected_cost.ec import *
 from expected_cost.utils import *
@@ -13,6 +15,8 @@ from machine_learning_module import *
 import tqdm
 
 from sklearn.model_selection import StratifiedShuffleSplit
+
+from skopt import BayesSearchCV
 
 class Model():
     def __init__(self,model,scaler,calibrator=None):
@@ -36,21 +40,23 @@ class Model():
         self.model.set_params(**params)
         self.model.fit(X_t,y)
         
-    def eval(self,X):
+    def eval(self,X,type='clf'):
         
         features = X.columns
         X_t = pd.DataFrame(columns=features,data=self.scaler.transform(X[features].values))
-
-        if hasattr(self.model,'predict_log_proba'):
-            logpost = self.model.predict_log_proba(X_t)
+        if type == 'clf':
+            if hasattr(self.model,'predict_log_proba'):
+                score = self.model.predict_log_proba(X_t)
+            else:
+                prob = self.model.predict_proba(X_t)
+                prob = np.clip(prob,1e-6,1-1e-6)
+                score = np.log(prob)
         else:
-            prob = self.model.predict_proba(X_t)
-            prob = np.clip(prob,1e-6,1-1e-6)
-            logpost = np.log(prob)
-           
-        return logpost
+            score = self.model.predict(X_t)    
 
-def get_metrics(y_scores,y_true,metrics_names,cmatrix=None,priors=None):
+        return score
+
+def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None):
     """
     Calculates evaluation metrics for the predicted scores and true labels.
 
@@ -96,7 +102,25 @@ def get_metrics(y_scores,y_true,metrics_names,cmatrix=None,priors=None):
 
     return metrics,y_pred
 
-def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,n_boot=0,cmatrix=None,priors=None):
+def get_metrics_reg(y_scores,y_true,metrics_names):
+    """
+    Calculates evaluation metrics for the predicted scores and true labels.
+
+    Args:
+        y_scores: The predicted scores.
+        y_true: The true labels.
+        metrics_names: The names of the evaluation metrics.
+
+    Returns:
+        metrics: A dictionary containing the evaluation metrics.
+
+    Note:
+        The function calculates the evaluation metrics for the predicted scores and true labels.
+    """
+
+    return dict((metric,eval(f'{metric}_score')(y_true=y_true,y_pred=y_scores)) for metric in metrics_names)	
+
+def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,n_boot=0,cmatrix=None,priors=None,type='clf'):
     
     print(f'Modelo: {i}')
 
@@ -152,8 +176,10 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,n_boot=0
             IDs_dev_bootstrap[b,:,r_train] = IDs_dev[boot_index]
             outputs_bootstrap[b,:,:,r_train] = outputs_dev[boot_index,:]
             X_dev_bootstrap[b,:,:,r_train] = X.loc[boot_index].reset_index(drop=True)
-
-            metrics_,y_pred = get_metrics(outputs_dev[boot_index,:],y_dev[boot_index],metrics,cmatrix,priors) 
+            if type == 'clf':
+                metrics_,y_pred = get_metrics_clf(outputs_dev[boot_index,:],y_dev[boot_index],metrics,cmatrix,priors) 
+            else:
+                metrics_,y_pred = get_metrics_reg(outputs_dev[boot_index,:],y_dev[boot_index],metrics)
             y_pred_bootstrap[b,:,r_train] = y_pred
             
             for metric in metrics:
@@ -163,14 +189,18 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,n_boot=0
                 break
             
             oob_index = np.setdiff1d(np.arange(outputs_dev.shape[0]),boot_index)
-            metrics_,y_pred = get_metrics(outputs_dev[oob_index,:],y_dev[oob_index],metrics,cmatrix,priors)
-            
+            if type == 'clf':
+                metrics_,y_pred = get_metrics_clf(outputs_dev[oob_index,:],y_dev[oob_index],metrics,cmatrix,priors)
+            else:
+                metrics_ = get_metrics_reg(outputs_dev[oob_index,:],y_dev[oob_index],metrics)
+                y_pred = np.empty(0)
+
             for metric in metrics:
                 metrics_oob[metric] = np.concatenate((metrics_oob[metric],[metrics_[metric]]))
 
     return model_params,metrics_bootstrap,outputs_bootstrap,y_true_bootstrap,y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob
 
-def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot=0,cmatrix=None,priors=None,parallel=True):
+def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot=0,cmatrix=None,priors=None,parallel=True,type='clf'):
     
     features = X.columns
 
@@ -188,7 +218,7 @@ def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics
     IDs_dev_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0],len(random_seeds_train)))
 
     if parallel == True:
-        results = Parallel(n_jobs=-1)(delayed(CV)(i,Model(model(**hyperp.iloc[c,:]),scaler),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,n_boot,cmatrix,priors) for i,(c,feature_set) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets)))
+        results = Parallel(n_jobs=-1)(delayed(CV)(i,Model(model(**hyperp.iloc[c,:]),scaler),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,n_boot,cmatrix,priors,type) for i,(c,feature_set) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets)))
         
         all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
         
@@ -206,7 +236,7 @@ def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics
             for f,feature_set in enumerate(feature_sets): 
                 all_models.loc[c*len(feature_sets)+f,params.keys()] = hyperp.loc[c,:].values[0]
                 all_models.loc[c*len(feature_sets)+f,features] = [1 if feature in feature_set else 0 for feature in features]
-                _,metrics_bootstrap_c,outputs_bootstrap_c, y_true_bootstrap, y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob_c = CV(Model(model(**params),scaler),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,n_boot,cmatrix,priors)
+                _,metrics_bootstrap_c,outputs_bootstrap_c, y_true_bootstrap, y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob_c = CV(Model(model(**params),scaler),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,n_boot,cmatrix,priors,type)
                 
                 for metric in metrics:
                     all_metrics_bootstrap[metric][c*len(feature_sets) + f,:] = metrics_bootstrap_c[metric]
@@ -216,7 +246,7 @@ def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics
         
     return all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_bootstrap,IDs_dev_bootstrap,all_metrics_oob
 
-def css(metrics,scoring='roc_auc'):
+def css(metrics,scoring='roc_auc',type='clf'):
     inf_conf_int = np.empty(metrics[scoring].shape[0])
     sup_conf_int = np.empty(metrics[scoring].shape[0])
 
@@ -224,7 +254,7 @@ def css(metrics,scoring='roc_auc'):
         inf_conf_int[model] = np.percentile(metrics[scoring][model,:],2.5)
         sup_conf_int[model] = np.percentile(metrics[scoring][model,:],97.5)
     
-    best = np.argmax(inf_conf_int) if 'norm' not in scoring else np.argmin(sup_conf_int)
+    best = np.argmax(inf_conf_int) if 'norm' not in scoring or type != 'clf' else np.argmin(sup_conf_int)
     
     return best
 
@@ -233,14 +263,14 @@ def select_best_models(metrics,scoring='roc_auc'):
     best = css(metrics,scoring)
     return best
 
-def BBCCV(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot=1000,cmatrix=None,priors=None,parallel=True,scoring='roc_auc'):
+def BBCCV(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot=1000,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',type='clf'):
     
-    all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob = CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot,cmatrix,priors,parallel)
-    best_model = select_best_models(all_metrics_bootstrap,scoring)
+    all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob = CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot,cmatrix,priors,parallel,type)
+    best_model = select_best_models(all_metrics_bootstrap,scoring,type)
     
     return all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob,best_model
 
-def test_model(model,X_dev,y_dev,X_test,y_test,metrics,cmatrix=None,priors=None):
+def test_model(model,X_dev,y_dev,X_test,y_test,metrics,cmatrix=None,priors=None,type='clf'):
     if not isinstance(X_dev,pd.DataFrame):
         X_dev = pd.DataFrame(X_dev)
     
@@ -249,6 +279,101 @@ def test_model(model,X_dev,y_dev,X_test,y_test,metrics,cmatrix=None,priors=None)
 
     model.train(X_dev,y_dev)
     outputs = model.eval(X_test)
-    metrics_test,y_pred = get_metrics(outputs,y_test,metrics,cmatrix,priors)
+    if type == 'clf':
+        metrics_test,y_pred = get_metrics_clf(outputs,y_test,metrics,cmatrix,priors)
+    else:
+        metrics_test = get_metrics_reg(outputs,y_test,metrics,cmatrix,priors)
     
     return metrics_test,y_pred,outputs
+
+def nestedCVT_bayes(model,scaler,X,y,n_iter,iterator_outer,random_seeds_outer,hyperp,metrics,IDs,n_boot=0,cmatrix=None,priors=None,scoring='roc_auc'):
+    
+    features = X.columns
+    iterator_inner = type(iterator_outer)(n_splits=iterator_outer.get_n_splits(),shuffle=True,random_state=42)
+
+    all_models = pd.DataFrame(columns=['random_seed','fold'] + list(hyperp.keys()) + list(features))
+    best_models = pd.DataFrame(columns=['random_seed','fold'] + list(hyperp.keys()) + list(features))
+
+    all_metrics_bootstrap = dict([(metric,np.empty((n_iter,np.max((1,n_boot))))) for metric in metrics])
+    metrics_bootstrap_best = dict([(metric,np.empty(np.max((1,n_boot)))) for metric in metrics])
+    
+    all_outputs_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer),2,n_iter))
+    outputs_bootstrap_best = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer),2))
+
+    y_true_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer)))
+
+    all_y_pred_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer),n_iter))
+    y_pred_bootstrap_best = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer)))
+
+    IDs_val_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer)),dtype=object)
+
+    search = BayesSearchCV(model(random_state=42) if hasattr(model(),'random_state') else model(),hyperp,scoring='accuracy',n_iter=n_iter,cv=iterator_inner,random_state=42,n_jobs=-1)
+    
+    y_val = np.empty((X.shape[0],len(random_seeds_outer)))
+    IDs_val = np.empty((X.shape[0],len(random_seeds_outer)),dtype=object)
+    outputs_val = np.empty((X.shape[0],2,n_iter*iterator_outer.get_n_splits(),len(random_seeds_outer)))
+    outputs_val_best = np.empty((X.shape[0],2,len(random_seeds_outer)))
+    model_rfecv = model()
+
+    if hasattr(model_rfecv,'kernel'):
+        model_rfecv.kernel = 'linear'
+    if hasattr(model_rfecv,'random_state'):
+        model_rfecv.random_state = 42
+    
+    for r,random_seed in enumerate(random_seeds_outer):
+        iterator_outer.random_state = random_seed
+
+        for fold,(train_index,test_index) in enumerate(iterator_outer.split(X,y)): 
+            X_train, X_test = X.loc[train_index], X.loc[test_index]
+            y_train, y_test = y[train_index], y[test_index]
+            ID_train, ID_test = IDs[train_index], IDs[test_index]
+
+            y_val[test_index,r] = y_test
+            IDs_val[test_index,r] = ID_test
+            if model == KNN:
+                feature_set = features
+            else:    
+                rfecv = RFECV(estimator=model_rfecv,step=1,scoring='accuracy',cv=iterator_inner,n_jobs=-1)
+                feature_set = features[rfecv.fit(X_train,y_train).support_]
+   
+            search.fit(X_train[feature_set],y_train)
+            best_models.loc[best_models.shape[0],'random_seed'] = random_seed
+            best_models.loc[best_models.shape[0]-1,'fold'] = fold
+            best_models.loc[best_models.shape[0]-1,hyperp.keys()] = search.best_params_
+            best_models.loc[best_models.shape[0]-1,features] = [1 if feature in feature_set else 0 for feature in features]
+
+            for p,param in enumerate(search.cv_results_['params']):
+                
+                all_models.loc[all_models.shape[0],'random_seed'] = random_seed
+                all_models.loc[all_models.shape[0]-1,'fold'] = fold
+                all_models.loc[all_models.shape[0]-1,param.keys()] = param.values()
+                all_models.loc[all_models.shape[0]-1,features] = [1 if feature in feature_set else 0 for feature in features]
+
+                mod = Model(model(**param),scaler)
+                mod.train(X_train[feature_set],y_train) 
+                outputs_val[test_index,:,p,r] = mod.eval(X_test[feature_set])
+
+            outputs_val_best[test_index,:,r] = outputs_val[test_index,:,search.best_index_,r]   
+
+    for b in range(np.max((1,n_boot))):
+        boot_index = np.random.choice(np.arange(outputs_val.shape[0]),outputs_val.shape[0],replace=True) if n_boot > 0 else np.arange(outputs_val.shape[0])
+
+        y_true_bootstrap[b,:] = np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))])
+        IDs_val_bootstrap[b,:] = np.concatenate([IDs_val[boot_index,r] for r in range(len(random_seeds_outer))])
+        for i in range(n_iter):
+            outputs = np.concatenate([outputs_val[boot_index,:,i,r] for r in range(len(random_seeds_outer))],axis=0)
+            all_outputs_bootstrap[b,:,:,i] = outputs
+
+            metrics_bootstrap,y_pred = get_metrics(outputs,np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))]),metrics,cmatrix,priors)
+            all_y_pred_bootstrap[b,:,i] = y_pred
+            for metric in metrics:
+                all_metrics_bootstrap[metric][i,b] = metrics_bootstrap[metric]
+        
+        outputs_best = np.concatenate([outputs_val_best[boot_index,:,r] for r in range(len(random_seeds_outer))],axis=0)
+        outputs_bootstrap_best[b,:,:] = outputs_best
+        metrics_bootstrap,y_pred = get_metrics(outputs_best,np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))]),metrics,cmatrix,priors)
+        y_pred_bootstrap_best[b,:] = y_pred
+        for metric in metrics:
+            metrics_bootstrap_best[metric][b] = metrics_bootstrap[metric]
+
+    return all_models,best_models,all_outputs_bootstrap,outputs_bootstrap_best,all_y_pred_bootstrap,y_pred_bootstrap_best,all_metrics_bootstrap,metrics_bootstrap_best,y_true_bootstrap,IDs_val_bootstrap
