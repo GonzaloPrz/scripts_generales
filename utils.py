@@ -1,5 +1,5 @@
 import numpy as np
-from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, precision_score, recall_score, r2_score, mean_absolute_error, mean_squared_error
+from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, precision_score, recall_score, r2_score, mean_absolute_error, mean_squared_error,median_absolute_error
 from sklearn.feature_selection import RFECV
 import torch,itertools
 import pandas as pd
@@ -307,18 +307,21 @@ def nestedCVT_bayes(model,scaler,X,y,n_iter,iterator_outer,random_seeds_outer,hy
 
     IDs_val_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer)),dtype=object)
 
-    search = BayesSearchCV(model(random_state=42) if hasattr(model(),'random_state') else model(),hyperp,scoring=scoring,n_iter=n_iter,cv=iterator_inner,random_state=42,n_jobs=-1)
-    
-    y_val = np.empty((X.shape[0],len(random_seeds_outer)))
-    IDs_val = np.empty((X.shape[0],len(random_seeds_outer)),dtype=object)
-    outputs_val = np.empty((X.shape[0],2,n_iter*iterator_outer.get_n_splits(),len(random_seeds_outer))) if problem_type == 'clf' else np.empty((X.shape[0],n_iter*iterator_outer.get_n_splits(),len(random_seeds_outer)))
-    outputs_val_best = np.empty((X.shape[0],2,len(random_seeds_outer))) if problem_type == 'clf' else np.empty((X.shape[0],len(random_seeds_outer)))
     model_rfecv = model()
+    model_bayes = model()
 
     if hasattr(model_rfecv,'kernel'):
         model_rfecv.kernel = 'linear'
     if hasattr(model_rfecv,'random_state'):
         model_rfecv.random_state = 42
+        model_bayes.random_state = 42
+
+    search = BayesSearchCV(model_bayes,hyperp,scoring=scoring,n_iter=n_iter,cv=iterator_inner,random_state=42,n_jobs=-1)
+    
+    y_val = np.empty((X.shape[0],len(random_seeds_outer)))
+    IDs_val = np.empty((X.shape[0],len(random_seeds_outer)),dtype=object)
+    outputs_val = np.empty((X.shape[0],2,n_iter*iterator_outer.get_n_splits(),len(random_seeds_outer))) if problem_type == 'clf' else np.empty((X.shape[0],n_iter*iterator_outer.get_n_splits(),len(random_seeds_outer)))
+    outputs_val_best = np.empty((X.shape[0],2,len(random_seeds_outer))) if problem_type == 'clf' else np.empty((X.shape[0],len(random_seeds_outer)))
     
     for r,random_seed in enumerate(random_seeds_outer):
         iterator_outer.random_state = random_seed
@@ -336,7 +339,7 @@ def nestedCVT_bayes(model,scaler,X,y,n_iter,iterator_outer,random_seeds_outer,hy
                 rfecv = RFECV(estimator=model_rfecv,step=1,scoring=scoring,cv=iterator_inner,n_jobs=-1)
                 feature_set = features[rfecv.fit(X_train,y_train).support_]
             if problem_type == 'clf':
-                search.fit(X_train[feature_set],y)
+                search.fit(X_train[feature_set],y_train)
             else:
                 search.fit(X_train[feature_set],y_train)
                 
@@ -345,14 +348,15 @@ def nestedCVT_bayes(model,scaler,X,y,n_iter,iterator_outer,random_seeds_outer,hy
             best_models.loc[best_models.shape[0]-1,hyperp.keys()] = search.best_params_
             best_models.loc[best_models.shape[0]-1,features] = [1 if feature in feature_set else 0 for feature in features]
 
-            for p,param in enumerate(search.cv_results_['params']):
+            for p,params in enumerate(search.cv_results_['params']):
                 
                 all_models.loc[all_models.shape[0],'random_seed'] = random_seed
                 all_models.loc[all_models.shape[0]-1,'fold'] = fold
-                all_models.loc[all_models.shape[0]-1,param.keys()] = param.values()
+                for param in params:
+                    all_models.loc[all_models.shape[0]-1,param] = params[param]
                 all_models.loc[all_models.shape[0]-1,features] = [1 if feature in feature_set else 0 for feature in features]
 
-                mod = Model(model(**param),scaler)
+                mod = Model(model(**params),scaler)
                 mod.train(X_train[feature_set],y_train) 
                 if problem_type == 'clf':
                     outputs_val[test_index,:,p,r] = mod.eval(X_test[feature_set],problem_type) 
