@@ -5,6 +5,7 @@ import torch,itertools,json
 import pandas as pd
 from sklearn.neighbors import KNeighborsClassifier as KNNC 
 from sklearn.neighbors import KNeighborsRegressor as KNNR
+from sklearn.svm import SVR 
 
 from expected_cost.ec import *
 from expected_cost.utils import *
@@ -16,6 +17,7 @@ from machine_learning_module import *
 import tqdm
 
 from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.utils import resample 
 
 from skopt import BayesSearchCV
 
@@ -39,6 +41,8 @@ class Model():
             params['max_depth'] = int(params['max_depth'])
 
         self.model.set_params(**params)
+        if hasattr(self.model,'precompute'):
+            self.model.precompute = True
         self.model.fit(X_t,y)
         
     def eval(self,X,problem_type='clf'):
@@ -127,7 +131,13 @@ def get_metrics_reg(y_scores,y_true,metrics_names):
 
     return metrics
 
-def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot=0,cmatrix=None,priors=None,problem_type='clf'):
+def conf_int_95(data):
+    mean = np.nanmean(data)
+    inf = np.nanpercentile(data,2.5)
+    sup = np.nanpercentile(data,97.5) 
+    return mean, inf, sup
+
+def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log_file=None,n_boot=0,cmatrix=None,priors=None,problem_type='clf'):
     
     print(f'Modelo: {i}')
 
@@ -181,7 +191,7 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log
                 outputs_dev[test_index] = model.eval(X_test,problem_type)
 
         for b in range(np.max((1,n_boot))):
-            boot_index = np.random.choice(np.arange(X.shape[0]),X.shape[0],replace=True) if n_boot > 0 else np.arange(X.shape[0])
+            boot_index = resample(np.arange(X.shape[0]),n_samples=X.shape[0],replace=True,random_state=b) if n_boot > 0 else np.arange(X.shape[0])
             y_true_bootstrap[b,:,r_train] = y_dev[boot_index]
             IDs_dev_bootstrap[b,:,r_train] = IDs_dev[boot_index]
             X_dev_bootstrap[b,:,:,r_train] = X.iloc[boot_index,:].reset_index(drop=True)
@@ -189,19 +199,6 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log
                 outputs_bootstrap[b,:,:,r_train] = outputs_dev[boot_index,:] 
                 metrics_,y_pred = get_metrics_clf(outputs_dev[boot_index,:],y_dev[boot_index],metrics,cmatrix,priors) 
             else:
-                if np.isnan(outputs_dev).all():
-                    print('NaNs in all outputs')
-                    print(model_params)
-                    #Save error in log file
-                    if json_log_file.exists():
-                        with open(json_log_file,'rb') as f:
-                            errors = json.load(f)
-                        with open(json_log_file,'wb') as f:
-                            errors['errors'].append({'model':i,'error':'NaNs in all outputs'})
-                            json.dump(errors,f)
-                    else:
-                        with open(json_log_file,'wb') as f:
-                            json.dump({'errors':[{'model':i,'error':'NaNs in all outputs'}]},f)
                 outputs_bootstrap[b,:,r_train] = outputs_dev[boot_index]
                 metrics_ = get_metrics_reg(outputs_dev[boot_index],y_dev[boot_index],metrics)
                 y_pred = outputs_dev[boot_index]
@@ -229,6 +226,9 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log
 def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot=0,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
     
     features = X.columns
+    
+    if hasattr(model(),'random_state') and model != SVR:
+        hyperp['random_state'] = 42
 
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
 
@@ -260,7 +260,7 @@ def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics
         for c in range(hyperp.shape[0]):
             params = hyperp.iloc[c,:].to_dict()
             for f,feature_set in enumerate(feature_sets): 
-                all_models.loc[c*len(feature_sets)+f,params.keys()] = hyperp.loc[c,:].values[0]
+                all_models.loc[c*len(feature_sets)+f,params.keys()] = hyperp.iloc[c,:].values
                 all_models.loc[c*len(feature_sets)+f,features] = [1 if feature in feature_set else 0 for feature in features]
                 _,metrics_bootstrap_c,outputs_bootstrap_c, y_true_bootstrap, y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob_c = CV(c*len(feature_sets)+f,Model(model(**params),scaler),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type)
                 
@@ -282,31 +282,30 @@ def css(metrics,scoring='roc_auc',problem_type='clf'):
     sup_conf_int = np.empty(metrics[scoring].shape[0])
 
     for model in range(metrics[scoring].shape[0]):
-        inf_conf_int[model] = np.percentile(metrics[scoring][model,:],2.5)
-        sup_conf_int[model] = np.percentile(metrics[scoring][model,:],97.5)
-    
+        _, inf_conf_int[model], sup_conf_int[model] = conf_int_95(metrics[scoring][model,:])
+        
     if problem_type == 'clf':
         if 'norm' not in scoring:
             best = np.argmax(inf_conf_int)
         else:
             best = np.argmin(sup_conf_int)
     else:
-        if 'error' not in scoring:
-            best = np.argmin(inf_conf_int)
+        if 'error' in scoring:
+            best = np.argmin(sup_conf_int)
         else:
-            best = np.argmax(sup_conf_int)
+            best = np.argmax(inf_conf_int)
             
     return best
 
-def select_best_models(metrics,scoring='roc_auc'):
+def select_best_models(metrics,scoring='roc_auc',problem_type='clf'):
 
-    best = css(metrics,scoring)
+    best = css(metrics,scoring,problem_type)
     return best
 
 def BBCCV(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot=1000,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',problem_type='clf'):
     
     all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob = CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot,cmatrix,priors,parallel,problem_type)
-    best_model = select_best_models(all_metrics_bootstrap,scoring)
+    best_model = select_best_models(all_metrics_bootstrap,scoring,problem_type)
     
     return all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob,best_model
 
@@ -326,12 +325,12 @@ def test_model(model,X_dev,y_dev,X_test,y_test,metrics,IDs_test,n_boot_train=0,n
     metrics_test_bootstrap = dict([(metric,np.empty(np.max((1,n_boot)))) for metric in metrics])
 
     for b_train in range(np.max((1,n_boot_train))):
-        boot_index_train = np.random.choice(np.arange(X_dev.shape[0]),X_dev.shape[0],replace=True) if n_boot_train > 0 else np.arange(X_dev.shape[0])
+        boot_index_train = resample(np.arange(X_dev.shape[0]),n_samples=X_dev.shape[0],replace=True,random_state=b_train) if n_boot_train > 0 else np.arange(X_dev.shape[0])
 
         model.train(X_dev.iloc[boot_index_train],y_dev[boot_index_train])
 
         for b in range(np.max((1,n_boot))):
-            boot_index = np.random.choice(np.arange(X_test.shape[0]),X_test.shape[0],replace=True) if n_boot > 0 else np.arange(X_test.shape[0])
+            boot_index = resample(np.arange(X_test.shape[0]),n_samples=X_test.shape[0],replace=True,random_state=b) if n_boot > 0 else np.arange(X_test.shape[0])
             y_true_bootstrap[b_train*n_boot_train + b:] = y_test[boot_index]
             IDs_test_bootstrap[b_train*n_boot_train + b:] = IDs_test[boot_index]
             outputs = model.eval(X_test.iloc[boot_index,:],problem_type)
@@ -340,7 +339,7 @@ def test_model(model,X_dev,y_dev,X_test,y_test,metrics,IDs_test,n_boot_train=0,n
                 outputs_bootstrap[b_train*n_boot_train + b:,:] = outputs
                 y_pred_bootstrap[b_train*n_boot_train + b:] = y_pred
             else:
-                metrics_test = get_metrics_reg(outputs,y_test[boot_index],metrics,cmatrix,priors)
+                metrics_test = get_metrics_reg(outputs,y_test[boot_index],metrics)
                 outputs_bootstrap[b_train*n_boot_train + b:] = outputs
             
             for metric in metrics:
@@ -428,7 +427,7 @@ def nestedCVT_bayes(model,scaler,X,y,n_iter,iterator_outer,random_seeds_outer,hy
             else:
                 outputs_val_best[test_index,r] = outputs_val[test_index,search.best_index_,r]
     for b in range(np.max((1,n_boot))):
-        boot_index = np.random.choice(np.arange(outputs_val.shape[0]),outputs_val.shape[0],replace=True) if n_boot > 0 else np.arange(outputs_val.shape[0])
+        boot_index = resample(np.arange(outputs_val.shape[0]),n_samples=outputs_val.shape[0],replace=True,random_seed=b) if n_boot > 0 else np.arange(outputs_val.shape[0])
 
         y_true_bootstrap[b,:] = np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))])
         IDs_val_bootstrap[b,:] = np.concatenate([IDs_val[boot_index,r] for r in range(len(random_seeds_outer))])
@@ -460,3 +459,11 @@ def nestedCVT_bayes(model,scaler,X,y,n_iter,iterator_outer,random_seeds_outer,hy
             metrics_bootstrap_best[metric][b] = metrics_bootstrap[metric]
 
     return all_models,best_models,all_outputs_bootstrap,outputs_bootstrap_best,all_y_pred_bootstrap,y_pred_bootstrap_best,all_metrics_bootstrap,metrics_bootstrap_best,y_true_bootstrap,IDs_val_bootstrap
+
+def compare(models,X_dev,y_dev,iterator,random_seeds_train,metric_name,IDs_dev,n_boot=100,cmatrix=None,priors=None,problem_type='clf'):
+    metrics = np.empty((np.max((1,n_boot)),len(models)))
+    
+    for m,model in enumerate(models.keys()):
+        _,metrics_bootstrap,_,_,_,_,_ = CV(0,models[model],X_dev[model],y_dev,X_dev[model].columns,iterator,random_seeds_train,metric_name,IDs_dev,n_boot=n_boot,cmatrix=cmatrix,priors=priors,problem_type=problem_type)
+        metrics[:,m] = metrics_bootstrap[metric_name[0]]
+    return metrics
