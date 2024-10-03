@@ -23,9 +23,9 @@ from skopt import BayesSearchCV
 class Model():
     def __init__(self,model,scaler=None,imputer=None,calibrator=None):
         self.model = model
-        self.scaler = scaler
-        self.imputer = imputer
-        self.calibrator = None
+        self.scaler = scaler() if scaler is not None else None
+        self.imputer = imputer() if imputer is not None else None
+        self.calibrator = calibrator() if calibrator is not None else None
 
     def train(self,X,y):   
         features = X.columns
