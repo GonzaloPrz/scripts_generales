@@ -21,15 +21,17 @@ from sklearn.utils import resample
 from skopt import BayesSearchCV
 
 class Model():
-    def __init__(self,model,scaler,calibrator=None):
-        self.scaler = scaler
+    def __init__(self,model,scaler=None,imputer=None,calibrator=None):
         self.model = model
+        self.scaler = scaler
+        self.imputer = imputer
         self.calibrator = None
 
     def train(self,X,y):   
         features = X.columns
         
-        X_t = pd.DataFrame(columns=features,data=self.scaler.fit_transform(X[features].values))
+        X_t = pd.DataFrame(columns=features,data=self.scaler.fit_transform(X[features].values)) if self.scaler is not None else X
+        X_t = pd.DataFrame(columns=features,data=self.imputer.fit_transform(X_t[features].values)) if self.imputer is not None else X_t
 
         params = self.model.get_params()
         if 'n_estimators' in params.keys():
@@ -47,7 +49,9 @@ class Model():
     def eval(self,X,problem_type='clf'):
         
         features = X.columns
-        X_t = pd.DataFrame(columns=features,data=self.scaler.transform(X[features].values))
+        X_t = pd.DataFrame(columns=features,data=self.scaler.transform(X[features].values)) if self.scaler is not None else X
+        X_t = pd.DataFrame(columns=features,data=self.imputer.transform(X_t[features].values)) if self.imputer is not None else X_t
+
         if problem_type == 'clf':
             if hasattr(self.model,'predict_log_proba'):
                 score = self.model.predict_log_proba(X_t)
@@ -222,7 +226,7 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log
 
     return model_params,metrics_bootstrap,outputs_bootstrap,y_true_bootstrap,y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob
 
-def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot=0,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
+def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot=0,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
     
     features = X.columns
     
@@ -243,7 +247,7 @@ def CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics
     IDs_dev_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0],len(random_seeds_train)))
 
     if parallel == True:
-        results = Parallel(n_jobs=-1)(delayed(CV)(i,Model(model(**hyperp.iloc[c,:]),scaler),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type) for i,(c,feature_set) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets)))
+        results = Parallel(n_jobs=-1)(delayed(CV)(i,Model(model(**hyperp.iloc[c,:]),scaler,imputer),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type) for i,(c,feature_set) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets)))
         
         all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
         
@@ -301,9 +305,9 @@ def select_best_models(metrics,scoring='roc_auc',problem_type='clf'):
     best = css(metrics,scoring,problem_type)
     return best
 
-def BBCCV(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot=1000,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',problem_type='clf'):
+def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot=1000,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',problem_type='clf'):
     
-    all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob = CVT(model,scaler,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot,cmatrix,priors,parallel,problem_type)
+    all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob = CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot,cmatrix,priors,parallel,problem_type)
     best_model = select_best_models(all_metrics_bootstrap,scoring,problem_type)
     
     return all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob,best_model
@@ -346,7 +350,7 @@ def test_model(model,X_dev,y_dev,X_test,y_test,metrics,IDs_test,n_boot_train=0,n
             
     return metrics_test_bootstrap,outputs_bootstrap,y_true_bootstrap,y_pred_bootstrap,IDs_test_bootstrap
 
-def nestedCVT_bayes(model,scaler,X,y,n_iter,iterator_outer,random_seeds_outer,hyperp,metrics,IDs,n_boot=0,cmatrix=None,priors=None,scoring='roc_auc',problem_type='clf'):
+def nestedCVT_bayes(model,scaler,imputer,X,y,n_iter,iterator_outer,random_seeds_outer,hyperp,metrics,IDs,n_boot=0,cmatrix=None,priors=None,scoring='roc_auc',problem_type='clf'):
     
     features = X.columns
     iterator_inner = type(iterator_outer)(n_splits=iterator_outer.get_n_splits(),shuffle=True,random_state=42)
