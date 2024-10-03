@@ -82,7 +82,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None):
         The function calculates the evaluation metrics for the predicted scores and true labels.
     """
     if cmatrix is None:
-        cmatix = CostMatrix([[0,1],[1,0]])
+        cmatrix = CostMatrix([[0,1],[1,0]])
     metrics = dict([(metric,[]) for metric in metrics_names])
 
     y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
