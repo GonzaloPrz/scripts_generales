@@ -97,7 +97,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None):
                 metrics[m] = np.nan
         elif m == 'norm_expected_cost':
             try:
-                metrics[m] = average_cost(targets=y_true,decisions=y_pred,costs=cmatrix,priors=priors,adjusted=True)
+                metrics[m] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
             except:
                 metrics[m] = np.nan
         elif m == 'roc_auc':
@@ -130,7 +130,7 @@ def get_metrics_reg(y_scores,y_true,metrics_names):
         try: 
             metrics[metric] = eval(metric)(y_true=y_true,y_pred=y_scores)
         except:
-            print(f'Error in {metric}')
+            metrics[metric] = np.nan
 
     return metrics
 
@@ -265,7 +265,7 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
             for f,feature_set in enumerate(feature_sets): 
                 all_models.loc[c*len(feature_sets)+f,params.keys()] = hyperp.iloc[c,:].values
                 all_models.loc[c*len(feature_sets)+f,features] = [1 if feature in feature_set else 0 for feature in features]
-                _,metrics_bootstrap_c,outputs_bootstrap_c, y_true_bootstrap, y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob_c = CV(c*len(feature_sets)+f,Model(model(**params),scaler),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type)
+                _,metrics_bootstrap_c,outputs_bootstrap_c, y_true_bootstrap, y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob_c = CV(c*len(feature_sets)+f,Model(model(**params),scaler,imputer),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type)
                 
                 for metric in metrics:
                     all_metrics_bootstrap[metric][c*len(feature_sets) + f,:] = metrics_bootstrap_c[metric]
@@ -312,43 +312,50 @@ def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_se
     
     return all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob,best_model
 
-def test_model(model,X_dev,y_dev,X_test,y_test,metrics,IDs_test,n_boot_train=0,n_boot_test=0,cmatrix=None,priors=None,problem_type='clf'):
-    if not isinstance(X_dev,pd.DataFrame):
+def test_model(model, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
+               n_boot_train=0, n_boot_test=0, cmatrix=None, priors=None, problem_type='clf'):
+    if not isinstance(X_dev, pd.DataFrame):
         X_dev = pd.DataFrame(X_dev)
-    
-    if not isinstance(X_test,pd.DataFrame):
+    if not isinstance(X_test, pd.DataFrame):
         X_test = pd.DataFrame(X_test)
 
-    n_boot = np.max((1,n_boot_test))*np.max((1,n_boot_train))
+    n_boot_train = max(1, n_boot_train)
+    n_boot_test = max(1, n_boot_test)
+    n_boot = n_boot_train * n_boot_test
 
-    outputs_bootstrap = np.empty((np.max((1,n_boot)),X_test.shape[0],2)) if problem_type == 'clf' else np.empty((np.max((1,n_boot)),X_test.shape[0]))
-    y_true_bootstrap = np.empty((np.max((1,n_boot)),X_test.shape[0]))
-    y_pred_bootstrap = np.empty((np.max((1,n_boot)),X_test.shape[0])) 
-    IDs_test_bootstrap = np.empty((np.max((1,n_boot)),X_test.shape[0]),dtype=object)
-    metrics_test_bootstrap = dict([(metric,np.empty(np.max((1,n_boot)))) for metric in metrics])
+    outputs_bootstrap = np.empty((n_boot, X_test.shape[0], 2)) if problem_type == 'clf' else np.empty((n_boot, X_test.shape[0]))
+    y_true_bootstrap = np.empty((n_boot, X_test.shape[0]))
+    y_pred_bootstrap = np.empty((n_boot, X_test.shape[0]))
+    IDs_test_bootstrap = np.empty((n_boot, X_test.shape[0]), dtype=object)
+    metrics_test_bootstrap = {metric: np.empty(n_boot) for metric in metrics}
 
-    for b_train in range(np.max((1,n_boot_train))):
-        boot_index_train = resample(np.arange(X_dev.shape[0]),n_samples=X_dev.shape[0],replace=True,random_state=b_train) if n_boot_train > 0 else np.arange(X_dev.shape[0])
+    idx = 0
+    for b_train in range(n_boot_train):
+        boot_index_train = resample(np.arange(X_dev.shape[0]), n_samples=X_dev.shape[0], replace=True, random_state=b_train) if n_boot_train > 1 else np.arange(X_dev.shape[0])
 
-        model.train(X_dev.iloc[boot_index_train],y_dev[boot_index_train])
+        model.train(X_dev.iloc[boot_index_train], y_dev[boot_index_train])
 
-        for b in range(np.max((1,n_boot))):
-            boot_index = resample(np.arange(X_test.shape[0]),n_samples=X_test.shape[0],replace=True,random_state=b) if n_boot > 0 else np.arange(X_test.shape[0])
-            y_true_bootstrap[b_train*n_boot_train + b:] = y_test[boot_index]
-            IDs_test_bootstrap[b_train*n_boot_train + b:] = IDs_test[boot_index]
-            outputs = model.eval(X_test.iloc[boot_index,:],problem_type)
+        for b_test in range(n_boot_test):
+            boot_index = resample(np.arange(X_test.shape[0]), n_samples=X_test.shape[0], replace=True, random_state=b_train * n_boot_train + b_test) if n_boot_test > 1 else np.arange(X_test.shape[0])
+
+            y_true_bootstrap[idx, :] = y_test[boot_index]
+            IDs_test_bootstrap[idx, :] = IDs_test[boot_index]
+            outputs = model.eval(X_test.iloc[boot_index, :], problem_type)
+
             if problem_type == 'clf':
-                metrics_test,y_pred = get_metrics_clf(outputs,y_test[boot_index],metrics,cmatrix,priors)
-                outputs_bootstrap[b_train*n_boot_train + b:,:] = outputs
-                y_pred_bootstrap[b_train*n_boot_train + b:] = y_pred
+                metrics_test, y_pred = get_metrics_clf(outputs, y_test[boot_index], metrics, cmatrix, priors)
+                outputs_bootstrap[idx, :, :] = outputs
+                y_pred_bootstrap[idx, :] = y_pred
             else:
-                metrics_test = get_metrics_reg(outputs,y_test[boot_index],metrics)
-                outputs_bootstrap[b_train*n_boot_train + b:] = outputs
-            
+                metrics_test = get_metrics_reg(outputs, y_test[boot_index], metrics)
+                outputs_bootstrap[idx, :] = outputs
+
             for metric in metrics:
-                metrics_test_bootstrap[metric][b] = metrics_test[metric]
-            
-    return metrics_test_bootstrap,outputs_bootstrap,y_true_bootstrap,y_pred_bootstrap,IDs_test_bootstrap
+                metrics_test_bootstrap[metric][idx] = metrics_test[metric]
+
+            idx += 1
+
+    return metrics_test_bootstrap, outputs_bootstrap, y_true_bootstrap, y_pred_bootstrap, IDs_test_bootstrap
 
 def nestedCVT_bayes(model,scaler,imputer,X,y,n_iter,iterator_outer,random_seeds_outer,hyperp,metrics,IDs,n_boot=0,cmatrix=None,priors=None,scoring='roc_auc',problem_type='clf'):
     
