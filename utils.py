@@ -92,7 +92,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None):
     for m in metrics_names:
         if m == 'norm_cross_entropy':
             try:
-                metrics[m] = LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true)),priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true))).detach().numpy()
+                metrics[m] = LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
             except: 
                 metrics[m] = np.nan
         elif m == 'norm_expected_cost':
