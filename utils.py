@@ -64,7 +64,7 @@ class Model():
 
         return score
 
-def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None):
+def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,threshold=None):
     """
     Calculates evaluation metrics for the predicted scores and true labels.
 
@@ -85,7 +85,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None):
         cmatrix = CostMatrix([[0,1],[1,0]])
     metrics = dict([(metric,[]) for metric in metrics_names])
 
-    y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
+    y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(np.exp(y_scores[:,1]) > threshold,dtype=int)
 
     y_scores = np.clip(y_scores,-1e6,1e6)
 
@@ -140,7 +140,7 @@ def conf_int_95(data):
     sup = np.nanpercentile(data,97.5) 
     return mean, inf, sup
 
-def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log_file=None,n_boot=0,cmatrix=None,priors=None,problem_type='clf'):
+def CV(i,model,X,y,all_features,threshold,iterator,random_seeds_train,metrics,IDs,json_log_file=None,n_boot=0,cmatrix=None,priors=None,problem_type='clf'):
     
     print(f'Modelo: {i}')
 
@@ -157,7 +157,8 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log
         features[feature] = 1
     
     model_params.update(features)
-
+    model_params.update({'threshold':threshold})
+    
     model_params = pd.DataFrame(model_params,index=[0])
 
     metrics_bootstrap = dict([(metric,np.empty(np.max((1,n_boot)))) for metric in metrics])
@@ -200,7 +201,7 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log
             X_dev_bootstrap[b,:,:,r_train] = X.iloc[boot_index,:].reset_index(drop=True)
             if problem_type == 'clf':
                 outputs_bootstrap[b,:,:,r_train] = outputs_dev[boot_index,:] 
-                metrics_,y_pred = get_metrics_clf(outputs_dev[boot_index,:],y_dev[boot_index],metrics,cmatrix,priors) 
+                metrics_,y_pred = get_metrics_clf(outputs_dev[boot_index,:],y_dev[boot_index],metrics,cmatrix,priors,threshold) 
             else:
                 outputs_bootstrap[b,:,r_train] = outputs_dev[boot_index]
                 metrics_ = get_metrics_reg(outputs_dev[boot_index],y_dev[boot_index],metrics)
@@ -226,7 +227,7 @@ def CV(i,model,X,y,all_features,iterator,random_seeds_train,metrics,IDs,json_log
 
     return model_params,metrics_bootstrap,outputs_bootstrap,y_true_bootstrap,y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob
 
-def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot=0,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
+def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,thresholds,metrics,IDs,json_log_file,n_boot=0,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
     
     features = X.columns
     
@@ -247,7 +248,7 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
     IDs_dev_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0],len(random_seeds_train)))
 
     if parallel == True:
-        results = Parallel(n_jobs=-1)(delayed(CV)(i,Model(model(**hyperp.iloc[c,:]),scaler,imputer),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type) for i,(c,feature_set) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets)))
+        results = Parallel(n_jobs=-1)(delayed(CV)(i,Model(model(**hyperp.iloc[c,:]),scaler,imputer),X[feature_set],y,X.columns,threshold,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type) for i,(c,feature_set,threshold) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets,thresholds)))
         
         all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
         
@@ -260,12 +261,12 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
         all_y_pred_bootstrap = np.concatenate(([result[4].reshape(all_y_pred_bootstrap.shape[0],all_y_pred_bootstrap.shape[1],1,all_y_pred_bootstrap.shape[-1]) for result in results]),axis=1)
         IDs_dev_bootstrap = results[0][5]
     else:
-        for c in range(hyperp.shape[0]):
+        for c,threshold in itertools.product(range(hyperp.shape[0]),thresholds):
             params = hyperp.iloc[c,:].to_dict()
             for f,feature_set in enumerate(feature_sets): 
                 all_models.loc[c*len(feature_sets)+f,params.keys()] = hyperp.iloc[c,:].values
                 all_models.loc[c*len(feature_sets)+f,features] = [1 if feature in feature_set else 0 for feature in features]
-                _,metrics_bootstrap_c,outputs_bootstrap_c, y_true_bootstrap, y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob_c = CV(c*len(feature_sets)+f,Model(model(**params),scaler,imputer),X[feature_set],y,X.columns,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type)
+                _,metrics_bootstrap_c,outputs_bootstrap_c, y_true_bootstrap, y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob_c = CV(c*len(feature_sets)*len(thresholds)+f,Model(model(**params),scaler,imputer),X[feature_set],y,X.columns,threshold,iterator,random_seeds_train,metrics,IDs,json_log_file,n_boot,cmatrix,priors,problem_type)
                 
                 for metric in metrics:
                     all_metrics_bootstrap[metric][c*len(feature_sets) + f,:] = metrics_bootstrap_c[metric]
@@ -305,9 +306,9 @@ def select_best_models(metrics,scoring='roc_auc',problem_type='clf'):
     best = css(metrics,scoring,problem_type)
     return best
 
-def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot=1000,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',problem_type='clf'):
+def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,thresholds,metrics,IDs,json_log_file,n_boot=1000,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',problem_type='clf'):
     
-    all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob = CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,json_log_file,n_boot,cmatrix,priors,parallel,problem_type)
+    all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob = CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,thresholds,metrics,IDs,json_log_file,n_boot,cmatrix,priors,parallel,problem_type)
     best_model = select_best_models(all_metrics_bootstrap,scoring,problem_type)
     
     return all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob,best_model
