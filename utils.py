@@ -139,8 +139,8 @@ def conf_int_95(data):
     inf = np.nanpercentile(data,2.5)
     sup = np.nanpercentile(data,97.5) 
     return mean, inf, sup
-
-def CV(i,model,X,y,all_features,threshold,iterator,random_seeds_train,metrics,IDs,json_log_file=None,n_boot=0,cmatrix=None,priors=None,problem_type='clf'):
+            
+def CV(i,model,X,y,all_features,threshold,iterator,random_seeds_train,metrics,IDs,n_boot=0,cmatrix=None,priors=None,problem_type='clf'):
     
     print(f'Modelo: {i}')
 
@@ -227,7 +227,7 @@ def CV(i,model,X,y,all_features,threshold,iterator,random_seeds_train,metrics,ID
 
     return model_params,metrics_bootstrap,outputs_bootstrap,y_true_bootstrap,y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob
 
-def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,thresholds,metrics,IDs,json_log_file,n_boot=0,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
+def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot=0,cmatrix=None,priors=None,parallel=True,problem_type='clf',thresholds=[None]):
     
     features = X.columns
     
