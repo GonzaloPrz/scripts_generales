@@ -299,7 +299,7 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
     all_metrics_bootstrap = dict([(metric,np.empty((hyperp.shape[0]*len(feature_sets),np.max((1,n_boot))))) for metric in metrics])
     all_metrics_oob = dict([(metric,np.empty((hyperp.shape[0]*len(feature_sets),np.max((1,n_boot))))) for metric in metrics])
 
-    all_outputs_bootstrap = np.empty((np.max((1,n_boot))*X.shape[0]*len(random_seeds_train),2,hyperp.shape[0]*len(feature_sets))) if problem_type == 'clf' else np.empty((np.max((1,n_boot)),X.shape[0],hyperp.shape[0]*len(feature_sets),len(random_seeds_train)))
+    all_outputs_bootstrap = np.empty((np.max((1,n_boot))*X.shape[0]*len(random_seeds_train),2,hyperp.shape[0]*len(feature_sets))) if problem_type == 'clf' else np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_train),hyperp.shape[0]*len(feature_sets)))
     
     y_true_bootstrap = np.empty((np.max((1,n_boot))*X.shape[0]*len(random_seeds_train)))
 
