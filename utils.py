@@ -140,154 +140,57 @@ def conf_int_95(data):
     sup = np.nanpercentile(data,97.5) 
     return mean, inf, sup
             
-def CV(i,model,X,y,all_features,threshold,iterator,random_seeds_train,metrics,IDs,n_boot=0,cmatrix=None,priors=None,problem_type='clf'):
+def CV(i,model_class,params,scaler,imputer,X,y,all_features,iterator,random_seeds_train,IDs,cmatrix=None,priors=None,problem_type='clf'):
     
     print(f'Modelo: {i}')
-
-    if hasattr(model.model,'random_state'):
-        model.model.random_state = 42
 
     if cmatrix is None:
         cmatrix = CostMatrix([[0,1],[1,0]])
 
-    model_params = model.model.get_params()
+    model_params = params.copy()
+
     features = dict((feature,0) for feature in all_features)
     
     for feature in X.columns:
         features[feature] = 1
     
     model_params.update(features)
-    if problem_type == 'clf':
-        model_params.update({'threshold':threshold})
     
     model_params = pd.DataFrame(model_params,index=[0])
 
-    metrics_bootstrap = dict([(metric,np.empty(np.max((1,n_boot)))) for metric in metrics])
-    metrics_oob = dict([(metric,np.empty(np.max((1,n_boot)))) for metric in metrics])
+    X_dev = np.empty((len(random_seeds_train),X.shape[0],X.shape[1]))
+    y_dev = np.empty((len(random_seeds_train),X.shape[0]))
+    IDs_dev = np.empty((len(random_seeds_train),X.shape[0]),dtype=object)
+    y_pred = np.empty((len(random_seeds_train),X.shape[0]))
 
-    '''
-    outputs_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0],2,len(random_seeds_train))) if problem_type == 'clf' else np.empty((np.max((1,n_boot)),X.shape[0],len(random_seeds_train)))
+    outputs_dev = np.empty((len(random_seeds_train),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_train),0))
 
-    y_true_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0],len(random_seeds_train)))
-    y_pred_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0],len(random_seeds_train)))
-    IDs_dev_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0],len(random_seeds_train)),dtype=object)
-    X_dev_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0],X.shape[1],len(random_seeds_train)))
+    for r,random_seed in enumerate(random_seeds_train):
 
-    metrics_oob = dict([(metric,np.empty(np.max((1,n_boot)))) for metric in metrics])
-    
-    for r_train,random_seed in enumerate(random_seeds_train):
         iterator.random_state = random_seed
-        X_dev = np.empty((X.shape[0],X.shape[1]))
-        y_dev = np.empty(X.shape[0])
-        IDs_dev = np.empty(X.shape[0],dtype=object)
-        
-        outputs_dev = np.empty((0,2)) if problem_type == 'clf' else np.empty(0)
 
         for train_index, test_index in iterator.split(X,y):
-            X_train, X_test = X.loc[train_index], X.loc[test_index]
-            y_train, y_test = y[train_index], y[test_index]
-            model.train(X_train, y_train)
-            
-            X_dev[test_index,:] = X_test
-            y_dev[test_index] = y_test
-            IDs_dev[test_index] = IDs[test_index]
-            
-            if problem_type == 'clf':
-                outputs_dev[test_index,:] = model.eval(X_test,problem_type) 
-            else:
-                outputs_dev[test_index] = model.eval(X_test,problem_type)
+            model = Model(model_class(**params),scaler,imputer)
+            if hasattr(model.model,'random_state'):
+                model.model.random_state = 42
 
-        for b in range(np.max((1,n_boot))):
-            boot_index = resample(np.arange(X.shape[0]),n_samples=X.shape[0],replace=True,random_state=b) if n_boot > 0 else np.arange(X.shape[0])
-            y_true_bootstrap[b,:,r_train] = y_dev[boot_index]
-            IDs_dev_bootstrap[b,:,r_train] = IDs_dev[boot_index]
-            X_dev_bootstrap[b,:,:,r_train] = X.iloc[boot_index,:].reset_index(drop=True)
-            if problem_type == 'clf':
-                outputs_bootstrap[b,:,:,r_train] = outputs_dev[boot_index,:] 
-                metrics_,y_pred = get_metrics_clf(outputs_dev[boot_index,:],y_dev[boot_index],metrics,cmatrix,priors,threshold) 
-            else:
-                outputs_bootstrap[b,:,r_train] = outputs_dev[boot_index]
-                metrics_ = get_metrics_reg(outputs_dev[boot_index],y_dev[boot_index],metrics)
-                y_pred = outputs_dev[boot_index]
-
-            y_pred_bootstrap[b,:,r_train] = y_pred
-            
-            for metric in metrics:
-                metrics_bootstrap[metric][b] = metrics_[metric]
-            
-            if n_boot == 0:
-                break
-            
-            oob_index = np.setdiff1d(np.arange(outputs_dev.shape[0]),boot_index)
-            if problem_type == 'clf':
-                metrics_,y_pred = get_metrics_clf(outputs_dev[oob_index,:],y_dev[oob_index],metrics,cmatrix,priors)
-            else:
-                metrics_ = get_metrics_reg(outputs_dev[oob_index],y_dev[oob_index],metrics)
-                y_pred = outputs_dev[oob_index]
-
-            for metric in metrics:
-                metrics_oob[metric][b] = metrics_[metric]
-    '''
-    outputs_bootstrap = np.empty((0,2)) if problem_type == 'clf' else np.empty(0)
-
-    y_true_bootstrap = np.empty(0)
-    y_pred_bootstrap = np.empty(0)
-    IDs_dev_bootstrap = np.empty(0,dtype=object)
-    X_dev_bootstrap = np.empty((0,X.shape[1]))
-    
-    X_dev = np.empty((0,X.shape[1]))
-    y_dev = np.empty(0)
-    IDs_dev = np.empty(0,dtype=object)
-    
-    outputs_dev = np.empty((0,2)) if problem_type == 'clf' else np.empty(0)
-
-    for random_seed in random_seeds_train:
-        iterator.random_state = random_seed
-    
-        for train_index, test_index in iterator.split(X,y):
-            
             model.train(X.loc[train_index], y[train_index])
-            
-            X_dev = np.concatenate((X_dev,X.loc[test_index]),axis=0)
-            y_dev = np.concatenate((y_dev,y[test_index]),axis=0)
-            IDs_dev = np.concatenate((IDs_dev,IDs[test_index]),axis=0)
 
-            outputs_dev = np.concatenate((outputs_dev,model.eval(X.loc[test_index],problem_type)))
+            X_dev[r,test_index] = X.loc[test_index]
+            y_dev[r,test_index] = y[test_index]
 
-    for b in range(np.max((1,n_boot))):
-        boot_index = resample(np.arange(outputs_dev.shape[0]),n_samples=outputs_dev.shape[0],replace=True,random_state=b) if n_boot > 0 else np.arange(outputs_dev.shape[0])
-        y_true_bootstrap = np.concatenate((y_true_bootstrap,y_dev[boot_index]),axis=0)
-        IDs_dev_bootstrap = np.concatenate((IDs_dev_bootstrap,IDs_dev[boot_index]),axis=0)
-        X_dev_bootstrap = np.concatenate((X_dev_bootstrap,X_dev[boot_index,:]),axis=0)
+            IDs_dev[r,test_index] = IDs[test_index]
+
+            outputs_dev[r,test_index] = model.eval(X.loc[test_index],problem_type)
+
         if problem_type == 'clf':
-            outputs_bootstrap = np.concatenate((outputs_bootstrap,outputs_dev[boot_index,:]),axis=0)
-            metrics_,y_pred = get_metrics_clf(outputs_dev[boot_index,:],y_dev[boot_index],metrics,cmatrix,priors,threshold) 
+            _,y_pred[r] = get_metrics_clf(outputs_dev[r],y_dev[r],[],cmatrix,priors) 
         else:
-            outputs_bootstrap = np.concatenate((outputs_bootstrap,outputs_dev[boot_index]),axis=0)
-            metrics_ = get_metrics_reg(outputs_dev[boot_index],y_dev[boot_index],metrics)
-            y_pred = outputs_dev[boot_index]
+            y_pred[r] = outputs_dev[r]
 
-        y_pred_bootstrap = np.concatenate((y_pred_bootstrap,y_pred),axis=0)
-        
-        for metric in metrics:
-            metrics_bootstrap[metric][b] = metrics_[metric]
-        
-        if n_boot == 0:
-            break
-        
-        oob_index = np.setdiff1d(np.arange(outputs_dev.shape[0]),boot_index)
-        if problem_type == 'clf':
-            metrics_,y_pred = get_metrics_clf(outputs_dev[oob_index,:],y_dev[oob_index],metrics,cmatrix,priors)
-        else:
-            metrics_ = get_metrics_reg(outputs_dev[oob_index],y_dev[oob_index],metrics)
-            y_pred = outputs_dev[oob_index]
+    return model_params,outputs_dev,y_dev,y_pred,IDs_dev
 
-        for metric in metrics:
-            metrics_oob[metric][b] = metrics_[metric]
-
-    return model_params,metrics_bootstrap,outputs_bootstrap,y_true_bootstrap,y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob
-
-def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot=0,cmatrix=None,priors=None,parallel=True,problem_type='clf',thresholds=[None]):
+def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,IDs,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
     
     features = X.columns
     
@@ -296,57 +199,46 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
 
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
 
-    all_metrics_bootstrap = dict([(metric,np.empty((hyperp.shape[0]*len(feature_sets),np.max((1,n_boot))))) for metric in metrics])
-    all_metrics_oob = dict([(metric,np.empty((hyperp.shape[0]*len(feature_sets),np.max((1,n_boot))))) for metric in metrics])
-
-    all_outputs_bootstrap = np.empty((np.max((1,n_boot))*X.shape[0]*len(random_seeds_train),2,hyperp.shape[0]*len(feature_sets))) if problem_type == 'clf' else np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_train),hyperp.shape[0]*len(feature_sets)))
-    
-    y_true_bootstrap = np.empty((np.max((1,n_boot))*X.shape[0]*len(random_seeds_train)))
-
-    all_y_pred_bootstrap = np.empty((np.max((1,n_boot))*X.shape[0]*len(random_seeds_train),hyperp.shape[0]*len(feature_sets)))
-
-    IDs_dev_bootstrap = np.empty((np.max((1,n_boot))*X.shape[0]*len(random_seeds_train)))
-
     if parallel == True:
-        results = Parallel(n_jobs=-1)(delayed(CV)(i,Model(model(**hyperp.iloc[c,:]),scaler,imputer),X[feature_set],y,X.columns,threshold,iterator,random_seeds_train,metrics,IDs,n_boot,cmatrix,priors,problem_type) for i,(c,feature_set,threshold) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets,thresholds)))
+        results = Parallel(n_jobs=-1)(delayed(CV)(i,model,hyperp.iloc[c,:].to_dict(),scaler,imputer,X[feature_set],y,X.columns,iterator,random_seeds_train,IDs,cmatrix,priors,problem_type) for i,(c,feature_set) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets)))
         
         all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
         
-        for metric in metrics:
-            all_metrics_bootstrap[metric] = np.concatenate(([result[1][metric].reshape(1,all_metrics_bootstrap[metric].shape[-1]) for result in results]),axis=0)
-            all_metrics_oob[metric] = np.concatenate(([result[6][metric].reshape(1,all_metrics_oob[metric].shape[-1]) for result in results]),axis=0)
-
-        all_outputs_bootstrap = np.concatenate(([result[2].reshape(1,all_outputs_bootstrap.shape[0],all_outputs_bootstrap.shape[1]) for result in results]),axis=0)
-        y_true_bootstrap = results[0][3]
-        all_y_pred_bootstrap = np.concatenate(([result[4].reshape(1,-1) for result in results]),axis=0)
-        IDs_dev_bootstrap = results[0][5]
+        all_outputs = np.concatenate(([np.expand_dims(result[1],axis=0) for result in results]),axis=0)
+        y_true = results[0][2]
+        all_y_pred = np.concatenate(([np.expand_dims(result[3],axis=0) for result in results]),axis=0)
+        IDs_dev = results[0][4]
     else:
-        for c,threshold in itertools.product(range(hyperp.shape[0]),thresholds):
+        all_outputs = np.empty((hyperp.shape[0]*len(feature_sets),len(random_seeds_train),X.shape[0],2)) if problem_type == 'clf' else np.empty((hyperp.shape[0]*len(feature_sets),len(random_seeds_train),X.shape[0]))
+    
+        y_true = np.empty((len(random_seeds_train),X.shape[0]))
+
+        all_y_pred = np.empty((hyperp.shape[0]*len(feature_sets),len(random_seeds_train),X.shape[0]))
+
+        IDs_dev = np.empty((len(random_seeds_train),X.shape[0]))
+
+        for c in range(hyperp.shape[0]):
             params = hyperp.iloc[c,:].to_dict()
             for f,feature_set in enumerate(feature_sets): 
                 all_models.loc[c*len(feature_sets)+f,params.keys()] = hyperp.iloc[c,:].values
                 all_models.loc[c*len(feature_sets)+f,features] = [1 if feature in feature_set else 0 for feature in features]
-                _,metrics_bootstrap_c,outputs_bootstrap_c, y_true_bootstrap, y_pred_bootstrap,IDs_dev_bootstrap,metrics_oob_c = CV(c*len(feature_sets)*len(thresholds)+f,Model(model(**params),scaler,imputer),X[feature_set],y,X.columns,threshold,iterator,random_seeds_train,metrics,IDs,n_boot,cmatrix,priors,problem_type)
-                
-                for metric in metrics:
-                    all_metrics_bootstrap[metric][c*len(feature_sets) + f,:] = metrics_bootstrap_c[metric]
-                    all_metrics_oob[metric][c*len(feature_sets) + f,:] = metrics_oob_c[metric]
+                _,outputs_c, y_true, y_pred,IDs_dev = CV(c*len(feature_sets)+f,model,params,scaler,imputer,X[feature_set],y,X.columns,iterator,random_seeds_train,IDs,cmatrix,priors,problem_type)
                 
                 if problem_type == 'clf':
-                    all_outputs_bootstrap[:,:,:,c*len(feature_sets) + f,:] = outputs_bootstrap_c
+                    all_outputs[c*len(feature_sets) + f] = outputs_c
                 else:
-                    all_outputs_bootstrap[:,:,c*len(feature_sets) + f,:] = outputs_bootstrap_c
+                    all_outputs[c*len(feature_sets) + f] = outputs_c
                 
-                all_y_pred_bootstrap[:,:,c*len(feature_sets) + f,:] = y_pred_bootstrap
+                all_y_pred[c*len(feature_sets) + f] = y_pred
         
-    return all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_bootstrap,IDs_dev_bootstrap,all_metrics_oob
+    return all_models,all_outputs,all_y_pred,y_true,IDs_dev
 
 def css(metrics,scoring='roc_auc',problem_type='clf'):
     inf_conf_int = np.empty(metrics[scoring].shape[0])
     sup_conf_int = np.empty(metrics[scoring].shape[0])
 
     for model in range(metrics[scoring].shape[0]):
-        _, inf_conf_int[model], sup_conf_int[model] = conf_int_95(metrics[scoring][model,:])
+        _, inf_conf_int[model], sup_conf_int[model] = conf_int_95(metrics[scoring][model])
         
     if problem_type == 'clf':
         if 'norm' not in scoring:
@@ -366,12 +258,11 @@ def select_best_models(metrics,scoring='roc_auc',problem_type='clf'):
     best = css(metrics,scoring,problem_type)
     return best
 
-def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot=1000,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',problem_type='clf',thresholds=[None]):
+def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,IDs,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',problem_type='clf'):
     
-    all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob = CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,metrics,IDs,n_boot,cmatrix,priors,parallel,problem_type,thresholds)
-    best_model = select_best_models(all_metrics_bootstrap,scoring,problem_type)
+    all_models,all_outputs,all_y_pred,y_true_dev,IDs_dev = CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,IDs,cmatrix,priors,parallel,problem_type)
     
-    return all_models,all_outputs_bootstrap,all_y_pred_bootstrap,all_metrics_bootstrap,y_true_dev_bootstrap,IDs_dev_bootstrap,all_metrics_oob,best_model
+    return all_models,all_outputs,all_y_pred,y_true_dev,IDs_dev
 
 def test_model(model, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
                n_boot_train=0, n_boot_test=0, cmatrix=None, priors=None, problem_type='clf'):
@@ -380,27 +271,23 @@ def test_model(model, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
     if not isinstance(X_test, pd.DataFrame):
         X_test = pd.DataFrame(X_test)
 
-    n_boot_train = max(1, n_boot_train)
-    n_boot_test = max(1, n_boot_test)
-    n_boot = n_boot_train * n_boot_test
-
     outputs_bootstrap = np.empty((0, 2)) if problem_type == 'clf' else np.empty(0)
     y_true_bootstrap = np.empty(0)
     y_pred_bootstrap = np.empty(0)
     IDs_test_bootstrap = np.empty(0, dtype=object)
     metrics_test_bootstrap = {metric: np.empty(0) for metric in metrics}
 
-    for b_train in range(n_boot_train):
-        boot_index_train = resample(np.arange(X_dev.shape[0]), n_samples=X_dev.shape[0], replace=True, random_state=b_train) if n_boot_train > 0 else np.arange(X_dev.shape[0])
+    for b_train in range(np.max((1,n_boot_train))):
+        boot_index_train = resample(X_dev.index, n_samples=X_dev.shape[0], replace=True, random_state=b_train) if n_boot_train > 0 else X_dev.index
 
-        model.train(X_dev.iloc[boot_index_train], y_dev[boot_index_train])
+        model.train(X_dev.loc[boot_index_train], y_dev[boot_index_train])
 
-        for b_test in range(n_boot_test):
-            boot_index = resample(np.arange(X_test.shape[0]), n_samples=X_test.shape[0], replace=True, random_state=b_train * n_boot_train + b_test) if n_boot_test > 1 else np.arange(X_test.shape[0])
+        for b_test in range(np.max((1,n_boot_test))):
+            boot_index = resample(X_test.index, n_samples=X_test.shape[0], replace=True, random_state=b_train * np.max((1,n_boot_train)) + b_test) if n_boot_test > 0 else X_test.index
 
             y_true_bootstrap = np.concatenate((y_true_bootstrap,y_test[boot_index]))
             IDs_test_bootstrap = np.concatenate((IDs_test_bootstrap,IDs_test[boot_index]))
-            outputs = model.eval(X_test.iloc[boot_index, :], problem_type)
+            outputs = model.eval(X_test.loc[boot_index, :], problem_type)
 
             if problem_type == 'clf':
                 metrics_test, y_pred = get_metrics_clf(outputs, y_test[boot_index], metrics, cmatrix, priors)
