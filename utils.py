@@ -30,8 +30,8 @@ class Model():
     def train(self,X,y):   
         features = X.columns
         
-        X_t = pd.DataFrame(columns=features,data=self.scaler.fit_transform(X[features].values)) if self.scaler is not None else X
-        X_t = pd.DataFrame(columns=features,data=self.imputer.fit_transform(X_t[features].values)) if self.imputer is not None else X_t
+        X_t = pd.DataFrame(columns=features,data=self.scaler.fit_transform(X.values)) if self.scaler is not None else X
+        X_t = pd.DataFrame(columns=features,data=self.imputer.fit_transform(X_t.values)) if self.imputer is not None else X_t
 
         params = self.model.get_params()
         if 'n_estimators' in params.keys():
@@ -49,8 +49,8 @@ class Model():
     def eval(self,X,problem_type='clf'):
         
         features = X.columns
-        X_t = pd.DataFrame(columns=features,data=self.scaler.transform(X[features].values)) if self.scaler is not None else X
-        X_t = pd.DataFrame(columns=features,data=self.imputer.transform(X_t[features].values)) if self.imputer is not None else X_t
+        X_t = pd.DataFrame(columns=features,data=self.scaler.transform(X.values)) if self.scaler is not None else X
+        X_t = pd.DataFrame(columns=features,data=self.imputer.transform(X_t.values)) if self.imputer is not None else X_t
 
         if problem_type == 'clf':
             if hasattr(self.model,'predict_log_proba'):
