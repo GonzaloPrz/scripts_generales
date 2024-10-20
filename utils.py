@@ -264,7 +264,7 @@ def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_se
     
     return all_models,all_outputs,all_y_pred,y_true_dev,IDs_dev
 
-def test_model(model, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
+def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
                n_boot_train=0, n_boot_test=0, cmatrix=None, priors=None, problem_type='clf'):
     if not isinstance(X_dev, pd.DataFrame):
         X_dev = pd.DataFrame(X_dev)
@@ -279,7 +279,7 @@ def test_model(model, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
 
     for b_train in range(np.max((1,n_boot_train))):
         boot_index_train = resample(X_dev.index, n_samples=X_dev.shape[0], replace=True, random_state=b_train) if n_boot_train > 0 else X_dev.index
-
+        model = Model(model_class(**params),scaler,imputer)
         model.train(X_dev.loc[boot_index_train], y_dev[boot_index_train])
 
         for b_test in range(np.max((1,n_boot_test))):
