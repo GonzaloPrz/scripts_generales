@@ -84,7 +84,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
     if cmatrix is None:
         cmatrix = CostMatrix([[0,1],[1,0]])
     metrics = dict([(metric,[]) for metric in metrics_names])
-    
+
     y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(np.exp(y_scores[:,1]) > threshold,dtype=int)
 
     y_scores = np.clip(y_scores,-1e6,1e6)
@@ -163,7 +163,7 @@ def CV(i,model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,r
     IDs_dev = np.empty((len(random_seeds_train),X.shape[0]),dtype=object)
     y_pred = np.empty((len(random_seeds_train),X.shape[0]))
 
-    outputs_dev = np.empty((len(random_seeds_train),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_train),0))
+    outputs_dev = np.empty((len(random_seeds_train),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_train),X.shape[0]))
 
     for r,random_seed in enumerate(random_seeds_train):
 
@@ -190,7 +190,7 @@ def CV(i,model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,r
 
     return model_params,outputs_dev,y_dev,y_pred,IDs_dev
 
-def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,thresholds,IDs,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
+def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,IDs,thresholds=[None],cmatrix=None,priors=None,parallel=True,problem_type='clf'):
     
     features = X.columns
     
@@ -217,20 +217,19 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
 
         IDs_dev = np.empty((len(random_seeds_train),X.shape[0]))
 
-        for c in range(hyperp.shape[0]):
-            params = hyperp.iloc[c,:].to_dict()
-            for f,feature_set in enumerate(feature_sets): 
-                all_models.loc[c*len(feature_sets)+f,params.keys()] = hyperp.iloc[c,:].values
-                all_models.loc[c*len(feature_sets)+f,features] = [1 if feature in feature_set else 0 for feature in features]
-                _,outputs_c, y_true, y_pred,IDs_dev = CV(c*len(feature_sets)+f,model,params,scaler,imputer,X[feature_set],y,X.columns,iterator,random_seeds_train,IDs,cmatrix,priors,problem_type)
-                
-                if problem_type == 'clf':
-                    all_outputs[c*len(feature_sets) + f] = outputs_c
-                else:
-                    all_outputs[c*len(feature_sets) + f] = outputs_c
-                
-                all_y_pred[c*len(feature_sets) + f] = y_pred
-        
+        for c, (comb,threshold,feature_set) in enumerate(itertools.product(range(hyperp.shape[0]),thresholds,feature_sets)):
+            params = hyperp.iloc[comb,:].to_dict()
+            all_models.loc[c,params.keys()] = hyperp.iloc[comb,:].values
+            all_models.loc[c,features] = [1 if feature in feature_set else 0 for feature in features]
+            _,outputs_c, y_true, y_pred,IDs_dev = CV(c,model,params,scaler,imputer,X[feature_set],y,X.columns,threshold,iterator,random_seeds_train,IDs,cmatrix,priors,problem_type)
+            
+            if problem_type == 'clf':
+                all_outputs[c] = outputs_c
+            else:
+                all_outputs[c] = outputs_c
+            
+            all_y_pred[c] = y_pred
+            
     return all_models,all_outputs,all_y_pred,y_true,IDs_dev
 
 def css(metrics,scoring='roc_auc',problem_type='clf'):
