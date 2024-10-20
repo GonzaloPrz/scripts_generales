@@ -84,7 +84,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
     if cmatrix is None:
         cmatrix = CostMatrix([[0,1],[1,0]])
     metrics = dict([(metric,[]) for metric in metrics_names])
-
+    
     y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(np.exp(y_scores[:,1]) > threshold,dtype=int)
 
     y_scores = np.clip(y_scores,-1e6,1e6)
@@ -140,7 +140,7 @@ def conf_int_95(data):
     sup = np.nanpercentile(data,97.5) 
     return mean, inf, sup
             
-def CV(i,model_class,params,scaler,imputer,X,y,all_features,iterator,random_seeds_train,IDs,cmatrix=None,priors=None,problem_type='clf'):
+def CV(i,model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,random_seeds_train,IDs,cmatrix=None,priors=None,problem_type='clf'):
     
     print(f'Modelo: {i}')
 
@@ -184,13 +184,13 @@ def CV(i,model_class,params,scaler,imputer,X,y,all_features,iterator,random_seed
             outputs_dev[r,test_index] = model.eval(X.loc[test_index],problem_type)
 
         if problem_type == 'clf':
-            _,y_pred[r] = get_metrics_clf(outputs_dev[r],y_dev[r],[],cmatrix,priors) 
+            _,y_pred[r] = get_metrics_clf(outputs_dev[r],y_dev[r],[],cmatrix,priors,threshold) 
         else:
             y_pred[r] = outputs_dev[r]
 
     return model_params,outputs_dev,y_dev,y_pred,IDs_dev
 
-def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,IDs,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
+def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,thresholds,IDs,cmatrix=None,priors=None,parallel=True,problem_type='clf'):
     
     features = X.columns
     
@@ -200,7 +200,7 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
 
     if parallel == True:
-        results = Parallel(n_jobs=-1)(delayed(CV)(i,model,hyperp.iloc[c,:].to_dict(),scaler,imputer,X[feature_set],y,X.columns,iterator,random_seeds_train,IDs,cmatrix,priors,problem_type) for i,(c,feature_set) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets)))
+        results = Parallel(n_jobs=-1)(delayed(CV)(i,model,hyperp.iloc[c,:].to_dict(),scaler,imputer,X[feature_set],y,X.columns,threshold,iterator,random_seeds_train,IDs,cmatrix,priors,problem_type) for i,(c,feature_set,threshold) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets,thresholds)))
         
         all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
         
