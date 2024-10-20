@@ -155,7 +155,10 @@ def CV(i,model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,r
         features[feature] = 1
     
     model_params.update(features)
-    
+
+    if problem_type == 'clf':
+        model_params.update({'threshold':threshold})
+            
     model_params = pd.DataFrame(model_params,index=[0])
 
     X_dev = np.empty((len(random_seeds_train),X.shape[0],X.shape[1]))
