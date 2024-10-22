@@ -267,7 +267,7 @@ def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_se
     return all_models,all_outputs,all_y_pred,y_true_dev,IDs_dev
 
 def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
-               n_boot_train=0, n_boot_test=0, cmatrix=None, priors=None, problem_type='clf'):
+               n_boot_train=0, n_boot_test=0, cmatrix=None, priors=None, problem_type='clf',threshold=None):
     if not isinstance(X_dev, pd.DataFrame):
         X_dev = pd.DataFrame(X_dev)
     if not isinstance(X_test, pd.DataFrame):
@@ -292,7 +292,7 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
             outputs = model.eval(X_test.loc[boot_index, :], problem_type)
 
             if problem_type == 'clf':
-                metrics_test, y_pred = get_metrics_clf(outputs, y_test[boot_index], metrics, cmatrix, priors)
+                metrics_test, y_pred = get_metrics_clf(outputs, y_test[boot_index], metrics, cmatrix, priors,threshold)
                 y_pred_bootstrap = np.concatenate((y_pred_bootstrap,y_pred))
             else:
                 metrics_test = get_metrics_reg(outputs, y_test[boot_index], metrics)
