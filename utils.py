@@ -18,7 +18,7 @@ import tqdm,pdb
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.utils import resample 
 
-from skopt import BayesSearchCV
+from bayes_opt import BayesianOptimization
 
 class Model():
     def __init__(self,model,scaler=None,imputer=None,calibrator=None):
@@ -140,10 +140,8 @@ def conf_int_95(data):
     sup = np.nanpercentile(data,97.5) 
     return mean, inf, sup
             
-def CV(i,model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,random_seeds_train,IDs,cmatrix=None,priors=None,problem_type='clf'):
+def CV(model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,random_seeds_train,IDs,cmatrix=None,priors=None,problem_type='clf'):
     
-    print(f'Modelo: {i}')
-
     if cmatrix is None:
         cmatrix = CostMatrix([[0,1],[1,0]])
 
@@ -203,7 +201,7 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
 
     if parallel == True:
-        results = Parallel(n_jobs=-1)(delayed(CV)(i,model,hyperp.iloc[c,:].to_dict(),scaler,imputer,X[feature_set],y,X.columns,threshold,iterator,random_seeds_train,IDs,cmatrix,priors,problem_type) for i,(c,feature_set,threshold) in enumerate(itertools.product(range(hyperp.shape[0]),feature_sets,thresholds)))
+        results = Parallel(n_jobs=-1)(delayed(CV)(model,hyperp.loc[c,:].to_dict(),scaler,imputer,X[feature_set],y,X.columns,threshold,iterator,random_seeds_train,IDs,cmatrix,priors,problem_type) for c,feature_set,threshold in itertools.product(hyperp.index,feature_sets,thresholds))
         
         all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
         
@@ -234,37 +232,6 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
             all_y_pred[c] = y_pred
             
     return all_models,all_outputs,all_y_pred,y_true,IDs_dev
-
-def css(metrics,scoring='roc_auc',problem_type='clf'):
-    inf_conf_int = np.empty(metrics[scoring].shape[0])
-    sup_conf_int = np.empty(metrics[scoring].shape[0])
-
-    for model in range(metrics[scoring].shape[0]):
-        _, inf_conf_int[model], sup_conf_int[model] = conf_int_95(metrics[scoring][model])
-        
-    if problem_type == 'clf':
-        if 'norm' not in scoring:
-            best = np.argmax(inf_conf_int)
-        else:
-            best = np.argmin(sup_conf_int)
-    else:
-        if 'error' in scoring:
-            best = np.argmin(sup_conf_int)
-        else:
-            best = np.argmax(inf_conf_int)
-            
-    return best
-
-def select_best_models(metrics,scoring='roc_auc',problem_type='clf'):
-
-    best = css(metrics,scoring,problem_type)
-    return best
-
-def BBCCV(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,IDs,cmatrix=None,priors=None,parallel=True,scoring='roc_auc',problem_type='clf'):
-    
-    all_models,all_outputs,all_y_pred,y_true_dev,IDs_dev = CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,IDs,cmatrix,priors,parallel,problem_type)
-    
-    return all_models,all_outputs,all_y_pred,y_true_dev,IDs_dev
 
 def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
                n_boot_train=0, n_boot_test=0, cmatrix=None, priors=None, problem_type='clf',threshold=None):
@@ -303,6 +270,129 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
                 metrics_test_bootstrap[metric] = np.concatenate((metrics_test_bootstrap[metric],[metrics_test[metric]]))
 
     return metrics_test_bootstrap, outputs_bootstrap, y_true_bootstrap, y_pred_bootstrap, IDs_test_bootstrap
+
+def nestedCVT(model,scaler,imputer,X,y,n_iter,iterator_outer,random_seeds_outer,hyperp_space,IDs,scoring='roc_auc',problem_type='clf'):
+    features = X.columns
+    iterator_inner = iterator_outer(n_splits=iterator_outer.get_n_splits(),shuffle=True,random_state=42)
+
+    all_models = pd.DataFrame(columns=['random_seed','fold'] + list(hyperp_space.keys()) + list(features))
+    best_models = pd.DataFrame(columns=['random_seed','fold'] + list(hyperp_space.keys()) + list(features))
+
+    all_outputs = np.empty((len(random_seeds_outer),n_iter,X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),n_iter,X.shape[0]))
+    outputs_best = np.empty((len(random_seeds_outer),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),X.shape[0]))
+
+    y_true = np.empty((len(random_seeds_outer),X.shape[0]))
+
+    all_y_pred = np.empty((len(random_seeds_outer),n_iter,X.shape[0]))
+    y_pred_best = np.empty((len(random_seeds_outer),X.shape[0]))
+
+    model_rfecv = model()
+
+    if hasattr(model_rfecv,'kernel'):
+        model_rfecv.kernel = 'linear'
+    if hasattr(model_rfecv,'random_state'):
+        model_rfecv.random_state = 42
+    
+    y_val = np.empty((len(random_seeds_outer),X.shape[0]))
+    IDs_val = np.empty((len(random_seeds_outer),X.shape[0]),dtype=object)
+    outputs_val = np.empty((len(random_seeds_outer),n_iter*iterator_outer.get_n_splits(),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),n_iter*iterator_outer.get_n_splits(),X.shape[0]))
+    outputs_val_best = np.empty((len(random_seeds_outer),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),X.shape[0]))
+    
+    for r,random_seed in enumerate(random_seeds_outer):
+        iterator_outer.random_state = random_seed
+        
+        for (train_index_out,test_index_out) in iterator_outer.split(X,y): 
+            X_dev, X_test = X.loc[train_index_out], X.loc[test_index_out]
+            y_dev, y_test = y[train_index_out], y[test_index_out]
+            ID_dev, ID_test = IDs[train_index_out], IDs[test_index_out]
+            X_dev = imputer().fit_transform(scaler().fit_transform(X_dev))
+            y_val[r,test_index_out] = y_test
+            IDs_val[r,test_index_out] = ID_test
+            
+            best_features = rfe(Model(model_rfecv,scaler,imputer),X_dev,y_dev,scoring,iterator_inner,problem_type)
+            best_params = tuning(model,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,scoring,iterator_inner,problem_type)
+            
+def rfe(model,X,y,iterator,scoring='roc_auc_score',problem_type='clf'):
+    all_features = X.columns
+    features = X.columns
+
+    outputs = np.empty((0,2)) if problem_type == 'clf' else np.empty(0)
+    y_pred = np.empty(0)
+
+    ascending = True if any(x in scoring for x in ['erorr','loss','norm']) else False
+
+    last_scoring = np.inf if ascending else -np.inf
+
+    for feature in all_features:
+        scorings = dict([(feature,np.nan) for feature in features])
+        features = list(set(features)-set(feature))
+        
+        for train_index, val_index in iterator.split(X,y):
+            model.train(X.loc[train_index,features],y[train_index])
+            if problem_type == 'clf':
+                outputs_, y_pred_ = model.eval(X.loc[val_index,features],problem_type)
+            else:
+                outputs_ = model.eval(X.loc[val_index,features],problem_type)
+            outputs = np.vstack((outputs,outputs_))
+            y_pred = np.concatenate((y_pred,y_pred_))
+
+        if scoring == 'roc_auc_score':
+            scorings[feature] = eval(scoring)(y_true=y[val_index],y_pred=outputs[:,1])
+        else:
+            scorings[feature] = eval(scoring)(y_true=y[val_index],y_pred=y_pred)
+
+        scorings = pd.Series(scorings).sort_values(ascending=ascending).reset_index(drop=True)
+        if new_best(last_scoring,scorings[0],not ascending):
+            last_scoring = scorings[0]
+            feature_to_remove = scorings.index[0]
+            features = list(set(features)-set([feature_to_remove]))
+        else:
+            break
+
+    return features
+
+def new_best(old,new,greater=True):
+    if greater:
+        return new > old
+    else:
+        return new < old
+
+def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf'):
+    optimizer = BayesianOptimization(
+    f=lambda hyperp_space: scoring_bo(hyperp_space, model,scaler,imputer,X, y, iterator, scoring, problem_type),
+    pbounds=hyperp_space,
+    random_state=42,
+    verbose=2
+    )
+
+    optimizer.maximize(init_points=5,n_iter=n_iter)
+
+    return optimizer.max['params']
+
+def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type):
+
+    if any(x in params.keys() for x in ['n_estimators','n_neighbors','max_depth']):
+        params = {k:int(v) for k,v in params.items() if k in ['n_estimators','n_neighbors','max_depth']}
+    
+    y_true = np.empty(X.shape[0])
+    y_pred = np.empty(X.shape[0])
+    outputs = np.empty((X.shape[0],2))
+    
+    for train_index, test_index in iterator.split(X,y):
+        model = Model(model_class(**params),scaler,imputer)
+        model.train(X.loc[train_index],y[train_index])
+        if problem_type == 'clf':
+            outputs[test_index],y_pred[test_index] = model.eval(X.loc[test_index],problem_type)
+        else:
+            outputs[test_index] = model.eval(X.loc[test_index])
+        y_true[test_index] = y[test_index]
+    
+    if scoring == 'roc_auc':
+        return roc_auc_score(y_true=y,y_score=outputs[:,1])
+    elif any(x in scoring for x in ['error','loss','norm']):
+        return -eval(scoring)(y_true=y,y_pred=outputs)
+    else:
+        return eval(scoring)(y_true=y,y_pred=y_pred)
 
 def nestedCVT_bayes(model,scaler,imputer,X,y,n_iter,iterator_outer,random_seeds_outer,hyperp,metrics,IDs,n_boot=0,cmatrix=None,priors=None,scoring='roc_auc',problem_type='clf'):
     
@@ -424,3 +514,29 @@ def compare(models,X_dev,y_dev,iterator,random_seeds_train,metric_name,IDs_dev,n
         _,metrics_bootstrap,_,_,_,_,_ = CV(0,models[model],X_dev[model],y_dev,X_dev[model].columns,iterator,random_seeds_train,metric_name,IDs_dev,n_boot=n_boot,cmatrix=cmatrix,priors=priors,problem_type=problem_type)
         metrics[:,m] = metrics_bootstrap[metric_name[0]]
     return metrics
+
+
+def css(metrics,scoring='roc_auc',problem_type='clf'):
+    inf_conf_int = np.empty(metrics[scoring].shape[0])
+    sup_conf_int = np.empty(metrics[scoring].shape[0])
+
+    for model in range(metrics[scoring].shape[0]):
+        _, inf_conf_int[model], sup_conf_int[model] = conf_int_95(metrics[scoring][model])
+        
+    if problem_type == 'clf':
+        if 'norm' not in scoring:
+            best = np.argmax(inf_conf_int)
+        else:
+            best = np.argmin(sup_conf_int)
+    else:
+        if 'error' in scoring:
+            best = np.argmin(sup_conf_int)
+        else:
+            best = np.argmax(inf_conf_int)
+            
+    return best
+
+def select_best_models(metrics,scoring='roc_auc',problem_type='clf'):
+
+    best = css(metrics,scoring,problem_type)
+    return best
