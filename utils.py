@@ -35,11 +35,11 @@ class Model():
 
         params = self.model.get_params()
         if 'n_estimators' in params.keys():
-            params['n_estimators'] = int(params['n_estimators'])
+            params['n_estimators'] = int(params['n_estimators']) if params['n_estimators'] is not None else None
         if 'n_neighbors' in params.keys():
             params['n_neighbors'] = int(params['n_neighbors'])
         if 'max_depth' in params.keys():
-            params['max_depth'] = int(params['max_depth'])
+            params['max_depth'] = int(params['max_depth']) if params['max_depth'] is not None else None
 
         self.model.set_params(**params)
         if hasattr(self.model,'precompute'):
@@ -271,126 +271,189 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
 
     return metrics_test_bootstrap, outputs_bootstrap, y_true_bootstrap, y_pred_bootstrap, IDs_test_bootstrap
 
-def nestedCVT(model,scaler,imputer,X,y,n_iter,iterator_outer,random_seeds_outer,hyperp_space,IDs,scoring='roc_auc',problem_type='clf'):
+def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
     features = X.columns
-    iterator_inner = iterator_outer(n_splits=iterator_outer.get_n_splits(),shuffle=True,random_state=42)
+    
+    iterator_inner.random_state = 42
+    all_models = pd.DataFrame(columns=['random_seed','fold','threshold',scoring] + list(hyperp_space.keys()) + list(features))
 
-    all_models = pd.DataFrame(columns=['random_seed','fold'] + list(hyperp_space.keys()) + list(features))
-    best_models = pd.DataFrame(columns=['random_seed','fold'] + list(hyperp_space.keys()) + list(features))
-
-    all_outputs = np.empty((len(random_seeds_outer),n_iter,X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),n_iter,X.shape[0]))
     outputs_best = np.empty((len(random_seeds_outer),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),X.shape[0]))
 
     y_true = np.empty((len(random_seeds_outer),X.shape[0]))
 
-    all_y_pred = np.empty((len(random_seeds_outer),n_iter,X.shape[0]))
     y_pred_best = np.empty((len(random_seeds_outer),X.shape[0]))
 
-    model_rfecv = model()
+    model_rfecv = model_class()
 
     if hasattr(model_rfecv,'kernel'):
         model_rfecv.kernel = 'linear'
     if hasattr(model_rfecv,'random_state'):
         model_rfecv.random_state = 42
     
-    y_val = np.empty((len(random_seeds_outer),X.shape[0]))
     IDs_val = np.empty((len(random_seeds_outer),X.shape[0]),dtype=object)
-    outputs_val = np.empty((len(random_seeds_outer),n_iter*iterator_outer.get_n_splits(),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),n_iter*iterator_outer.get_n_splits(),X.shape[0]))
-    outputs_val_best = np.empty((len(random_seeds_outer),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),X.shape[0]))
     
     for r,random_seed in enumerate(random_seeds_outer):
         iterator_outer.random_state = random_seed
         
-        for (train_index_out,test_index_out) in iterator_outer.split(X,y): 
+        for k,(train_index_out,test_index_out) in enumerate(iterator_outer.split(X,y)): 
             X_dev, X_test = X.loc[train_index_out], X.loc[test_index_out]
             y_dev, y_test = y[train_index_out], y[test_index_out]
-            ID_dev, ID_test = IDs[train_index_out], IDs[test_index_out]
-            X_dev = imputer().fit_transform(scaler().fit_transform(X_dev))
-            y_val[r,test_index_out] = y_test
-            IDs_val[r,test_index_out] = ID_test
             
-            best_features = rfe(Model(model_rfecv,scaler,imputer),X_dev,y_dev,scoring,iterator_inner,problem_type)
-            best_params = tuning(model,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,scoring,iterator_inner,problem_type)
+            X_dev = X_dev.reset_index(drop=True)
+            y_dev = y_dev.reset_index(drop=True)
+            X_test = X_test.reset_index(drop=True)
+            y_test = y_test.reset_index(drop=True)
+
+            #ID_dev, ID_test = IDs[train_index_out], IDs[test_index_out]
+            IDs_val[r,test_index_out] = IDs[test_index_out]
+
+            scaler_ = scaler().fit(X_dev)
+            imputer_ = imputer().fit(X_dev)
+
+            X_dev = pd.DataFrame(columns=X.columns,data=imputer_.transform(scaler_.transform(X_dev)))
+            X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(scaler_.transform(X_test)))
+            best_features = rfe(Model(model_rfecv,scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold)
+            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter,scoring,problem_type,cmatrix,priors,threshold)
+
+            if hasattr(model_class(),'random_state'):
+                best_params['random_state'] = int(42)
+            if hasattr(model_class(),'probability'):
+                best_params['probability'] = True
+
+            append_dict = {'random_seed':random_seed,'fold':k,'threshold':threshold,scoring:best_score}
+            append_dict.update(best_params)
+            append_dict.update({feature:1 if feature in best_features else 0 for feature in X_dev.columns}) 
+
+            all_models.loc[len(all_models.index),:] = append_dict
+
+            model = Model(model_class(**best_params),scaler,imputer)
+            model.train(X_dev[best_features],y_dev)
             
-def rfe(model,X,y,iterator,scoring='roc_auc_score',problem_type='clf'):
-    all_features = X.columns
-    features = X.columns
-
-    outputs = np.empty((0,2)) if problem_type == 'clf' else np.empty(0)
-    y_pred = np.empty(0)
-
-    ascending = True if any(x in scoring for x in ['erorr','loss','norm']) else False
-
-    last_scoring = np.inf if ascending else -np.inf
-
-    for feature in all_features:
-        scorings = dict([(feature,np.nan) for feature in features])
-        features = list(set(features)-set(feature))
-        
-        for train_index, val_index in iterator.split(X,y):
-            model.train(X.loc[train_index,features],y[train_index])
             if problem_type == 'clf':
-                outputs_, y_pred_ = model.eval(X.loc[val_index,features],problem_type)
+                outputs_best_ = model.eval(X_test[best_features],problem_type)
+                if threshold is not None:
+                    y_pred_best_ = [1 if np.exp(x) > threshold else 0 for x in outputs_best[r,test_index_out][:,1]]
+                else:
+                    y_pred_best_= bayes_decisions(scores=outputs_best[r,test_index_out],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
+                
+                y_pred_best[r,test_index_out] = y_pred_best_
+
             else:
-                outputs_ = model.eval(X.loc[val_index,features],problem_type)
-            outputs = np.vstack((outputs,outputs_))
-            y_pred = np.concatenate((y_pred,y_pred_))
+                outputs_best_ = model.eval(X_test[best_features],problem_type)
+                y_pred_best[r,test_index_out] = outputs_best_
+            outputs_best[r,test_index_out] = outputs_best_
+            
+    return all_models,outputs_best,y_true,y_pred_best,IDs_val
 
-        if scoring == 'roc_auc_score':
-            scorings[feature] = eval(scoring)(y_true=y[val_index],y_pred=outputs[:,1])
-        else:
-            scorings[feature] = eval(scoring)(y_true=y[val_index],y_pred=y_pred)
+def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatrix=None,priors=None,threshold=None):
+    features = list(X.columns)
+    
+    # Ascending if error, loss, or other metrics where lower is better
+    ascending = any(x in scoring for x in ['error', 'loss', 'norm'])
+    best_score = np.inf if ascending else -np.inf
+    best_features = features.copy()
 
-        scorings = pd.Series(scorings).sort_values(ascending=ascending).reset_index(drop=True)
-        if new_best(last_scoring,scorings[0],not ascending):
-            last_scoring = scorings[0]
-            feature_to_remove = scorings.index[0]
-            features = list(set(features)-set([feature_to_remove]))
+    while len(features) > 1:
+        scorings = {}  # Dictionary to hold scores for each feature removal
+        
+        for feature in features:
+            print('Evaluating without feature:', feature)
+            
+            outputs = np.empty((0, 2)) if problem_type == 'clf' else np.empty(0)
+            y_pred = np.empty(0)
+            y_true = np.empty(0)
+            
+            for train_index, val_index in iterator.split(X, y):
+                X_train = X.iloc[train_index][[f for f in features if f != feature]]
+                X_val = X.iloc[val_index][[f for f in features if f != feature]]
+                y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+                
+                model.train(X_train, y_train)
+                
+                if problem_type == 'clf':
+                    outputs_ = model.eval(X_val,problem_type)
+                    if threshold is not None:
+                        y_pred_ = [1 if np.exp(x) > threshold else 0 for x in outputs_[:,1]]
+                    else:
+                        y_pred_ = bayes_decisions(scores=outputs_,costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
+                else:
+                    outputs_ = model.eval(X_val,problem_type)
+                    y_pred_ = outputs_
+                
+                outputs = np.vstack((outputs, outputs_)) if problem_type == 'clf' else np.append(outputs, outputs_)
+                y_pred = np.append(y_pred, y_pred_)
+                y_true = np.append(y_true, y_val)
+
+            # Choose the appropriate scoring function
+            if scoring == 'roc_auc_score':
+                scorings[feature] = eval(scoring)(y_true, outputs[:, 1] if problem_type == 'clf' else outputs)
+            else:
+                scorings[feature] = eval(scoring)(y_true, y_pred)
+            # Add other scoring metrics as needed
+
+        # Sort features by score to find the best to remove
+        scorings = pd.DataFrame(list(scorings.items()), columns=['feature', 'score']).sort_values(
+            by='score', ascending=ascending).reset_index(drop=True)
+        
+        best_feature_score = scorings['score'][0]
+        feature_to_remove = scorings['feature'][0]
+        
+        # If improvement is found, update best score and feature set
+        if new_best(best_score, best_feature_score, not ascending):
+            best_score = best_feature_score
+            features.remove(feature_to_remove)
+            best_features = features.copy()
+            print(f"Removing feature: {feature_to_remove}, New Best Score: {best_score}")
         else:
+            # Stop if no improvement
+            print("No further improvement. Stopping feature elimination.")
             break
 
-    return features
+    return best_features
 
 def new_best(old,new,greater=True):
     if greater:
-        return new > old
+        return new >= old
     else:
-        return new < old
+        return new <= old
 
-def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf'):
-    optimizer = BayesianOptimization(
-    f=lambda hyperp_space: scoring_bo(hyperp_space, model,scaler,imputer,X, y, iterator, scoring, problem_type),
-    pbounds=hyperp_space,
-    random_state=42,
-    verbose=2
-    )
+def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
+    search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space)
+    search.maximize(n_iter=n_iter)
+    return search.max['params'], search.max['target']
 
-    optimizer.maximize(init_points=5,n_iter=n_iter)
+def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None):
 
-    return optimizer.max['params']
-
-def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type):
-
-    if any(x in params.keys() for x in ['n_estimators','n_neighbors','max_depth']):
-        params = {k:int(v) for k,v in params.items() if k in ['n_estimators','n_neighbors','max_depth']}
-    
+    if 'n_estimators' in params.keys():
+        params['n_estimators'] = int(params['n_estimators'])
+    elif 'n_neighbors' in params.keys():
+        params['n_neighbors'] = int(params['n_neighbors'])
+    elif 'max_depth' in params.keys():
+        params['max_depth'] = int(params['max_depth'])
+    if 'random_state' in params.keys():
+        params['random_state'] = int(42)
+        
     y_true = np.empty(X.shape[0])
     y_pred = np.empty(X.shape[0])
-    outputs = np.empty((X.shape[0],2))
+    outputs = np.empty((X.shape[0],2)) if problem_type == 'clf' else np.empty(X.shape[0])
     
     for train_index, test_index in iterator.split(X,y):
         model = Model(model_class(**params),scaler,imputer)
         model.train(X.loc[train_index],y[train_index])
         if problem_type == 'clf':
-            outputs[test_index],y_pred[test_index] = model.eval(X.loc[test_index],problem_type)
+            outputs[test_index] = model.eval(X.loc[test_index],problem_type)
+            if threshold is not None:
+                y_pred[test_index] = [1 if np.exp(x) > threshold else 0 for x in outputs[test_index,1]]
+            else:
+                y_pred[test_index] = bayes_decisions(scores=outputs[test_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
         else:
-            outputs[test_index] = model.eval(X.loc[test_index])
+            outputs[test_index] = model.eval(X.loc[test_index],problem_type)
         y_true[test_index] = y[test_index]
     
-    if scoring == 'roc_auc':
-        return roc_auc_score(y_true=y,y_score=outputs[:,1])
-    elif any(x in scoring for x in ['error','loss','norm']):
+    if 'error' in scoring:
         return -eval(scoring)(y_true=y,y_pred=outputs)
+    elif scoring == 'roc_auc_score':
+        return eval(scoring)(y_true=y,y_score=outputs[:,1])
     else:
         return eval(scoring)(y_true=y,y_pred=y_pred)
 
