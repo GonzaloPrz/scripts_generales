@@ -502,6 +502,8 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
     if hasattr(model_rfecv,'kernel'):
         model_rfecv.kernel = 'linear'
+    if hasattr(model_rfecv,'probability'):
+        model_rfecv.probability = True
     if hasattr(model_rfecv,'random_state'):
         model_rfecv.random_state = 42
     
@@ -726,6 +728,9 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
         params['max_depth'] = int(params['max_depth'])
     if 'random_state' in params.keys():
         params['random_state'] = int(42)
+    
+    if hasattr(model_class(),'probability'):
+        params['probability'] = True
         
     y_true = np.empty(X.shape[0])
     y_pred = np.empty(X.shape[0])
