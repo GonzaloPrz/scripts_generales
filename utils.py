@@ -530,6 +530,13 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             best_features = rfe(Model(model_rfecv,scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold)
             best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter,scoring,problem_type,cmatrix,priors,threshold)
 
+            if 'n_estimators' in best_params.keys():
+                best_params['n_estimators'] = int(best_params['n_estimators'])
+            elif 'n_neighbors' in best_params.keys():
+                best_params['n_neighbors'] = int(best_params['n_neighbors'])
+            elif 'max_depth' in best_params.keys():
+                best_params['max_depth'] = int(best_params['max_depth'])
+            
             if hasattr(model_class(),'random_state'):
                 best_params['random_state'] = int(42)
             if hasattr(model_class(),'probability'):
