@@ -142,6 +142,56 @@ def conf_int_95(data):
             
 def CV(model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,random_seeds_train,IDs,cmatrix=None,priors=None,problem_type='clf'):
     
+    """
+    Cross-validation function to train and evaluate a model with specified parameters, 
+    feature engineering, and evaluation metrics. Supports both classification and regression.
+
+    Parameters
+    ----------
+    model_class : class
+        The model class (e.g., sklearn model) to instantiate for training and evaluation.
+    params : dict
+        Parameters to initialize the model.
+    scaler : object
+        Scaler instance to preprocess the feature data.
+    imputer : object
+        Imputer instance to handle missing values.
+    X : pd.DataFrame
+        Input features data.
+    y : pd.Series or np.array
+        Target values.
+    all_features : list
+        List of all possible feature names, marking presence or absence for feature engineering.
+    threshold : float
+        Decision threshold for classification tasks.
+    iterator : cross-validation generator
+        Cross-validation iterator to split the dataset.
+    random_seeds_train : list
+        List of random seeds for reproducibility in training and evaluation.
+    IDs : np.array
+        Array of sample identifiers for tracking predictions.
+    cmatrix : CostMatrix, optional
+        Cost matrix for classification; defaults to [[0,1],[1,0]] if not provided.
+    priors : dict, optional
+        Class priors for probability calibration in classification.
+    problem_type : str, optional
+        Specifies 'clf' for classification or 'reg' for regression tasks (default is 'clf').
+
+    Returns
+    -------
+    model_params : pd.DataFrame
+        DataFrame of model parameters used for training.
+    outputs_dev : np.array
+        Array of model outputs per cross-validation fold for each sample.
+    y_dev : np.array
+        Array of true target values across folds.
+    y_pred : np.array
+        Array of predicted values across folds.
+    IDs_dev : np.array
+        Array of IDs for samples used in predictions across folds.
+
+    """
+     
     if cmatrix is None:
         cmatrix = CostMatrix([[0,1],[1,0]])
 
@@ -193,6 +243,60 @@ def CV(model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,ran
 
 def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets,IDs,thresholds=[None],cmatrix=None,priors=None,parallel=True,problem_type='clf'):
     
+    """
+    Cross-validation testing function for model training and evaluation with hyperparameter 
+    tuning, feature set selection, and parallel processing options. Supports classification 
+    and regression tasks.
+
+    Parameters
+    ----------
+    model : class
+        The model class (e.g., sklearn model) to instantiate for training and evaluation.
+    scaler : object
+        Scaler instance to preprocess feature data.
+    imputer : object
+        Imputer instance to handle missing values.
+    X : pd.DataFrame
+        Input features data.
+    y : pd.Series or np.array
+        Target values.
+    iterator : cross-validation generator
+        Cross-validation iterator to split the dataset.
+    random_seeds_train : list
+        List of random seeds for reproducibility in training and evaluation.
+    hyperp : pd.DataFrame
+        DataFrame of hyperparameter values for each model configuration.
+    feature_sets : list of lists
+        List of feature subsets to evaluate, each list containing feature names.
+    IDs : np.array
+        Array of sample identifiers for tracking predictions.
+    thresholds : list, optional
+        List of decision thresholds for classification; defaults to [None].
+    cmatrix : CostMatrix, optional
+        Cost matrix for classification; defaults to [[0,1],[1,0]] if not provided.
+    priors : dict, optional
+        Class priors for probability calibration in classification.
+    parallel : bool, optional
+        If True, enables parallel processing for cross-validation tasks (default is True).
+    problem_type : str, optional
+        Specifies 'clf' for classification or 'reg' for regression tasks (default is 'clf').
+
+    Returns
+    -------
+    all_models : pd.DataFrame
+        DataFrame of all model configurations, including hyperparameters and feature sets.
+    all_outputs : np.array
+        Array of model outputs for all pooled samples across each configuration and random 
+        seed in cross-validation.
+    all_y_pred : np.array
+        Array of predicted values across configurations and folds.
+    y_true : np.array
+        Array of true target values.
+    IDs_dev : np.array
+        Array of IDs for samples used in predictions across folds.
+
+    """
+    
     features = X.columns
     
     if hasattr(model(),'random_state') and model != SVR:
@@ -235,6 +339,62 @@ def CVT(model,scaler,imputer,X,y,iterator,random_seeds_train,hyperp,feature_sets
 
 def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, metrics, IDs_test,
                n_boot_train=0, n_boot_test=0, cmatrix=None, priors=None, problem_type='clf',threshold=None):
+    
+    """
+    Tests a model on specified development and test datasets, using optional bootstrapping for 
+    training and evaluation, and calculates metrics based on provided criteria. Supports both 
+    classification and regression.
+
+    Parameters
+    ----------
+    model_class : class
+        The model class (e.g., sklearn model) to instantiate for training and evaluation.
+    params : dict
+        Parameters to initialize the model.
+    scaler : object
+        Scaler instance to preprocess the feature data.
+    imputer : object
+        Imputer instance to handle missing values.
+    X_dev : pd.DataFrame or np.array
+        Development data features for training the model.
+    y_dev : pd.Series or np.array
+        Target values for the development dataset.
+    X_test : pd.DataFrame or np.array
+        Test data features for evaluating the model.
+    y_test : pd.Series or np.array
+        True target values for the test dataset.
+    metrics : list of str
+        List of metric names to evaluate (e.g., 'accuracy', 'precision').
+    IDs_test : np.array
+        Array of sample identifiers for tracking predictions on the test dataset.
+    n_boot_train : int, optional
+        Number of bootstrap samples for training; if 0, no bootstrapping is used (default is 0).
+    n_boot_test : int, optional
+        Number of bootstrap samples for testing; if 0, no bootstrapping is used (default is 0).
+    cmatrix : CostMatrix, optional
+        Cost matrix for classification; defaults to None.
+    priors : dict, optional
+        Class priors for probability calibration in classification.
+    problem_type : str, optional
+        Specifies 'clf' for classification or 'reg' for regression tasks (default is 'clf').
+    threshold : float, optional
+        Decision threshold for classification tasks.
+
+    Returns
+    -------
+    metrics_test_bootstrap : dict
+        Dictionary of test metrics, with metric names as keys and arrays of bootstrap metric values.
+    outputs_bootstrap : np.array
+        Array of model outputs for each test sample across bootstrap iterations.
+    y_true_bootstrap : np.array
+        Array of true target values for each bootstrap iteration of test samples.
+    y_pred_bootstrap : np.array
+        Array of predicted values across bootstrap iterations (for classification tasks).
+    IDs_test_bootstrap : np.array
+        Array of sample IDs used in bootstrap test predictions.
+
+    """
+
     if not isinstance(X_dev, pd.DataFrame):
         X_dev = pd.DataFrame(X_dev)
     if not isinstance(X_test, pd.DataFrame):
@@ -272,6 +432,61 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
     return metrics_test_bootstrap, outputs_bootstrap, y_true_bootstrap, y_pred_bootstrap, IDs_test_bootstrap
 
 def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
+    
+    """
+    Conducts nested cross-validation with recursive feature elimination (RFE) and hyperparameter tuning 
+    to select and evaluate the best model configuration. Supports classification and regression tasks.
+
+    Parameters
+    ----------
+    model_class : class
+        The model class (e.g., sklearn model) to instantiate for training and evaluation.
+    scaler : callable
+        Scaler function to initialize and fit a scaler for feature preprocessing.
+    imputer : callable
+        Imputer function to initialize and fit an imputer for handling missing values.
+    X : pd.DataFrame
+        Input features data.
+    y : pd.Series or np.array
+        Target values.
+    n_iter : int
+        Number of iterations for hyperparameter tuning.
+    iterator_outer : cross-validation generator
+        Outer cross-validation iterator to split the dataset.
+    iterator_inner : cross-validation generator
+        Inner cross-validation iterator for tuning and feature selection.
+    random_seeds_outer : list
+        List of random seeds for reproducibility across outer folds.
+    hyperp_space : dict
+        Dictionary defining hyperparameter search space for model tuning.
+    IDs : np.array
+        Array of sample identifiers for tracking predictions across folds.
+    scoring : str, optional
+        Metric name for model selection (e.g., 'roc_auc_score') (default is 'roc_auc_score').
+    problem_type : str, optional
+        Specifies 'clf' for classification or 'reg' for regression tasks (default is 'clf').
+    cmatrix : CostMatrix, optional
+        Cost matrix for classification; defaults to None.
+    priors : dict, optional
+        Class priors for probability calibration in classification.
+    threshold : float, optional
+        Decision threshold for classification tasks.
+
+    Returns
+    -------
+    all_models : pd.DataFrame
+        DataFrame of all model configurations, including hyperparameters, feature selections, and scores.
+    outputs_best : np.array
+        Array of model outputs for each sample across configurations and random seeds.
+    y_true : np.array
+        Array of true target values for each sample across configurations.
+    y_pred_best : np.array
+        Array of predicted values across configurations and random seeds.
+    IDs_val : np.array
+        Array of IDs for samples used in predictions across outer folds.
+        
+    """
+    
     features = X.columns
     
     iterator_inner.random_state = 42
@@ -346,6 +561,39 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
     return all_models,outputs_best,y_true,y_pred_best,IDs_val
 
 def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatrix=None,priors=None,threshold=None):
+    
+    """
+    Performs recursive feature elimination (RFE) to select the best subset of features based on a 
+    scoring metric. Iteratively removes features that lead to the smallest decrease in the scoring metric.
+
+    Parameters
+    ----------
+    model : object
+        Model instance to train and evaluate on the feature subsets.
+    X : pd.DataFrame
+        Feature dataset for model training and evaluation.
+    y : pd.Series or np.array
+        Target variable for training and validation.
+    iterator : cross-validation generator
+        Cross-validation iterator to split the data into training and validation sets.
+    scoring : str, optional
+        Scoring metric used to evaluate feature subsets (e.g., 'roc_auc_score') (default is 'roc_auc_score').
+    problem_type : str, optional
+        Specifies 'clf' for classification or 'reg' for regression tasks (default is 'clf').
+    cmatrix : CostMatrix, optional
+        Cost matrix for classification, defaults to None.
+    priors : dict, optional
+        Class priors for probability calibration in classification.
+    threshold : float, optional
+        Decision threshold for classification tasks.
+
+    Returns
+    -------
+    best_features : list
+        List of selected features after recursive feature elimination.
+        
+    """
+
     features = list(X.columns)
     
     # Ascending if error, loss, or other metrics where lower is better
@@ -418,11 +666,49 @@ def new_best(old,new,greater=True):
         return new <= old
 
 def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
+    
     search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space)
     search.maximize(n_iter=n_iter)
     return search.max['params'], search.max['target']
 
 def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None):
+
+    """
+    Evaluates a model's performance using cross-validation and a specified scoring metric, 
+    facilitating hyperparameter optimization with Bayesian optimization or similar approaches.
+
+    Parameters
+    ----------
+    params : dict
+        Dictionary of model hyperparameters.
+    model_class : class
+        The model class to instantiate for training and evaluation.
+    scaler : callable
+        Function to initialize and fit a scaler for feature preprocessing.
+    imputer : callable
+        Function to initialize and fit an imputer for missing value handling.
+    X : pd.DataFrame
+        Feature data for training and evaluation.
+    y : pd.Series or np.array
+        Target variable.
+    iterator : cross-validation generator
+        Cross-validation iterator to split the data into training and testing sets.
+    scoring : str
+        Scoring metric for evaluating model performance (e.g., 'roc_auc_score').
+    problem_type : str
+        Specifies 'clf' for classification or 'reg' for regression tasks.
+    cmatrix : CostMatrix, optional
+        Cost matrix for classification, defaults to None.
+    priors : dict, optional
+        Class priors for probability calibration in classification tasks.
+    threshold : float, optional
+        Decision threshold for classification predictions.
+
+    Returns
+    -------
+    float
+        The computed score based on the chosen scoring metric and the model's cross-validated performance.
+    """
 
     if 'n_estimators' in params.keys():
         params['n_estimators'] = int(params['n_estimators'])
@@ -457,119 +743,6 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     else:
         return eval(scoring)(y_true=y,y_pred=y_pred)
 
-def nestedCVT_bayes(model,scaler,imputer,X,y,n_iter,iterator_outer,random_seeds_outer,hyperp,metrics,IDs,n_boot=0,cmatrix=None,priors=None,scoring='roc_auc',problem_type='clf'):
-    
-    features = X.columns
-    iterator_inner = type(iterator_outer)(n_splits=iterator_outer.get_n_splits(),shuffle=True,random_state=42)
-
-    all_models = pd.DataFrame(columns=['random_seed','fold'] + list(hyperp.keys()) + list(features))
-    best_models = pd.DataFrame(columns=['random_seed','fold'] + list(hyperp.keys()) + list(features))
-
-    all_metrics_bootstrap = dict([(metric,np.empty((n_iter,np.max((1,n_boot))))) for metric in metrics])
-    metrics_bootstrap_best = dict([(metric,np.empty(np.max((1,n_boot)))) for metric in metrics])
-    
-    all_outputs_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer),2,n_iter)) if problem_type == 'clf' else np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer),n_iter))
-    outputs_bootstrap_best = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer),2)) if problem_type == 'clf' else np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer)))
-
-    y_true_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer)))
-
-    all_y_pred_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer),n_iter))
-    y_pred_bootstrap_best = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer)))
-
-    IDs_val_bootstrap = np.empty((np.max((1,n_boot)),X.shape[0]*len(random_seeds_outer)),dtype=object)
-
-    model_rfecv = model()
-    model_bayes = model()
-
-    if hasattr(model_rfecv,'kernel'):
-        model_rfecv.kernel = 'linear'
-    if hasattr(model_rfecv,'random_state'):
-        model_rfecv.random_state = 42
-        model_bayes.random_state = 42
-
-    search = BayesSearchCV(model_bayes,hyperp,scoring=scoring,n_iter=n_iter,cv=iterator_inner,random_state=42,n_jobs=-1)
-    
-    y_val = np.empty((X.shape[0],len(random_seeds_outer)))
-    IDs_val = np.empty((X.shape[0],len(random_seeds_outer)),dtype=object)
-    outputs_val = np.empty((X.shape[0],2,n_iter*iterator_outer.get_n_splits(),len(random_seeds_outer))) if problem_type == 'clf' else np.empty((X.shape[0],n_iter*iterator_outer.get_n_splits(),len(random_seeds_outer)))
-    outputs_val_best = np.empty((X.shape[0],2,len(random_seeds_outer))) if problem_type == 'clf' else np.empty((X.shape[0],len(random_seeds_outer)))
-    
-    for r,random_seed in enumerate(random_seeds_outer):
-        iterator_outer.random_state = random_seed
-
-        for fold,(train_index,test_index) in enumerate(iterator_outer.split(X,y)): 
-            X_train, X_test = X.loc[train_index], X.loc[test_index]
-            y_train, y_test = y[train_index], y[test_index]
-            ID_train, ID_test = IDs[train_index], IDs[test_index]
-
-            y_val[test_index,r] = y_test
-            IDs_val[test_index,r] = ID_test
-            if model == KNNC or model == KNNR:
-                feature_set = features
-            else:    
-                rfecv = RFECV(estimator=model_rfecv,step=1,scoring=scoring,cv=iterator_inner,n_jobs=-1)
-                feature_set = features[rfecv.fit(X_train,y_train).support_]
-
-            search.fit(X_train[feature_set],y_train)
-                
-            best_models.loc[best_models.shape[0],'random_seed'] = random_seed
-            best_models.loc[best_models.shape[0]-1,'fold'] = fold
-            best_models.loc[best_models.shape[0]-1,hyperp.keys()] = search.best_params_
-            best_models.loc[best_models.shape[0]-1,features] = [1 if feature in feature_set else 0 for feature in features]
-
-            for p,params in enumerate(search.cv_results_['params']):
-                
-                all_models.loc[all_models.shape[0],'random_seed'] = random_seed
-                all_models.loc[all_models.shape[0]-1,'fold'] = fold
-                for param in params:
-                    all_models.loc[all_models.shape[0]-1,param] = params[param]
-                all_models.loc[all_models.shape[0]-1,features] = [1 if feature in feature_set else 0 for feature in features]
-
-                mod = Model(model(**params),scaler)
-                mod.train(X_train[feature_set],y_train) 
-                if problem_type == 'clf':
-                    outputs_val[test_index,:,p,r] = mod.eval(X_test[feature_set],problem_type) 
-                else:
-                    outputs_val[test_index,p,r] = mod.eval(X_test[feature_set],problem_type)
-
-            if problem_type == 'clf':
-                outputs_val_best[test_index,:,r] = outputs_val[test_index,:,search.best_index_,r]   
-            else:
-                outputs_val_best[test_index,r] = outputs_val[test_index,search.best_index_,r]
-    for b in range(np.max((1,n_boot))):
-        boot_index = resample(np.arange(outputs_val.shape[0]),n_samples=outputs_val.shape[0],replace=True,random_seed=b) if n_boot > 0 else np.arange(outputs_val.shape[0])
-
-        y_true_bootstrap[b,:] = np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))])
-        IDs_val_bootstrap[b,:] = np.concatenate([IDs_val[boot_index,r] for r in range(len(random_seeds_outer))])
-        for i in range(n_iter):
-            if problem_type == 'clf':
-                outputs = np.concatenate([outputs_val[boot_index,:,i,r] for r in range(len(random_seeds_outer))],axis=0)
-                all_outputs_bootstrap[b,:,:,i] = outputs
-
-                metrics_bootstrap,y_pred = get_metrics_clf(outputs,np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))]),metrics,cmatrix,priors)
-                all_y_pred_bootstrap[b,:,i] = y_pred
-            else:
-                outputs = np.concatenate([outputs_val[boot_index,i,r] for r in range(len(random_seeds_outer))],axis=0)
-                all_outputs_bootstrap[b,:,i] = outputs
-                metrics_bootstrap = get_metrics_reg(outputs,np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))]),metrics)
-            for metric in metrics:
-                all_metrics_bootstrap[metric][i,b] = metrics_bootstrap[metric]
-    
-        if problem_type == 'clf':
-            outputs_best = np.concatenate([outputs_val_best[boot_index,:,r] for r in range(len(random_seeds_outer))],axis=0)
-            outputs_bootstrap_best[b,:,:] = outputs_best
-        
-            metrics_bootstrap,y_pred = get_metrics_clf(outputs_best,np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))]),metrics,cmatrix,priors)
-            y_pred_bootstrap_best[b,:] = y_pred
-        else:
-            outputs_best = np.concatenate([outputs_val_best[boot_index,r] for r in range(len(random_seeds_outer))],axis=0)
-            outputs_bootstrap_best[b,:] = outputs_best
-            metrics_bootstrap = get_metrics_reg(outputs_best,np.concatenate([y_val[boot_index,r] for r in range(len(random_seeds_outer))]),metrics)
-        for metric in metrics:
-            metrics_bootstrap_best[metric][b] = metrics_bootstrap[metric]
-
-    return all_models,best_models,all_outputs_bootstrap,outputs_bootstrap_best,all_y_pred_bootstrap,y_pred_bootstrap_best,all_metrics_bootstrap,metrics_bootstrap_best,y_true_bootstrap,IDs_val_bootstrap
-
 def compare(models,X_dev,y_dev,iterator,random_seeds_train,metric_name,IDs_dev,n_boot=100,cmatrix=None,priors=None,problem_type='clf'):
     metrics = np.empty((np.max((1,n_boot)),len(models)))
     
@@ -577,7 +750,6 @@ def compare(models,X_dev,y_dev,iterator,random_seeds_train,metric_name,IDs_dev,n
         _,metrics_bootstrap,_,_,_,_,_ = CV(0,models[model],X_dev[model],y_dev,X_dev[model].columns,iterator,random_seeds_train,metric_name,IDs_dev,n_boot=n_boot,cmatrix=cmatrix,priors=priors,problem_type=problem_type)
         metrics[:,m] = metrics_bootstrap[metric_name[0]]
     return metrics
-
 
 def css(metrics,scoring='roc_auc',problem_type='clf'):
     inf_conf_int = np.empty(metrics[scoring].shape[0])
