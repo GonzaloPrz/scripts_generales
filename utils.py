@@ -7,6 +7,8 @@ from sklearn.neighbors import KNeighborsClassifier as KNNC
 from sklearn.neighbors import KNeighborsRegressor as KNNR
 from sklearn.svm import SVR 
 
+from sklearn import metrics
+
 from expected_cost.ec import *
 from expected_cost.utils import *
 from psrcal.losses import LogLoss
@@ -745,12 +747,16 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
             outputs[test_index] = model.eval(X.loc[test_index],problem_type)
         y_true[test_index] = y[test_index]
     
+    scoring_func = getattr(metrics, scoring, None)
+    if not scoring_func:
+        raise ValueError(f"Scoring function '{scoring}' is not available.")
+    
     if 'error' in scoring:
-        return -eval(scoring)(y_true=y,y_pred=outputs)
+        return -scoring_func(y_true, outputs)
     elif scoring == 'roc_auc_score':
-        return eval(scoring)(y_true=y,y_score=outputs[:,1])
+        return scoring_func(y_true, outputs[:, 1])
     else:
-        return eval(scoring)(y_true=y,y_pred=y_pred)
+        return scoring_func(y_true, y_pred)
 
 def compare(models,X_dev,y_dev,iterator,random_seeds_train,metric_name,IDs_dev,n_boot=100,cmatrix=None,priors=None,problem_type='clf'):
     metrics = np.empty((np.max((1,n_boot)),len(models)))
