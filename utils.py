@@ -643,6 +643,10 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
             # Choose the appropriate scoring function
             if scoring == 'roc_auc_score':
                 scorings[feature] = eval(scoring)(y_true, outputs[:, 1] if problem_type == 'clf' else outputs)
+            elif scoring == 'norm_expected_cost':
+                scorings[feature] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
+            elif scoring == 'norm_cross_entropy':
+                scorings[feature] = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
             else:
                 scorings[feature] = eval(scoring)(y_true, y_pred)
             # Add other scoring metrics as needed
@@ -748,11 +752,13 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
         y_true[test_index] = y[test_index]
     
     scoring_func = getattr(metrics, scoring, None)
-    if not scoring_func:
-        raise ValueError(f"Scoring function '{scoring}' is not available.")
-    
+
     if 'error' in scoring:
         return -scoring_func(y_true, outputs)
+    elif scoring == 'norm_expected_cost':
+        return average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
+    elif scoring == 'norm_cross_entropy':
+        return LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
     elif scoring == 'roc_auc_score':
         return scoring_func(y_true, outputs[:, 1])
     else:
