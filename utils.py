@@ -617,9 +617,9 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
         for feature in features:
             print('Evaluating without feature:', feature)
             
-            outputs = np.empty((0, 2)) if problem_type == 'clf' else np.empty(0)
-            y_pred = np.empty(0)
-            y_true = np.empty(0)
+            outputs = np.empty((X.shape[0], 2)) if problem_type == 'clf' else np.empty(X.shape[0])
+            y_pred = np.empty(X.shape[0])
+            y_true = np.empty(X.shape[0])
             
             for train_index, val_index in iterator.split(X, y):
                 X_train = X.iloc[train_index][[f for f in features if f != feature]]
@@ -631,17 +631,13 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
                 if problem_type == 'clf':
                     outputs_ = model.eval(X_val,problem_type)
                     if threshold is not None:
-                        y_pred_ = [1 if np.exp(x) > threshold else 0 for x in outputs_[:,1]]
+                        y_pred[val_index] = [1 if np.exp(x) > threshold else 0 for x in outputs_[:,1]]
                     else:
-                        y_pred_ = bayes_decisions(scores=outputs_,costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
+                        y_pred[val_index] = bayes_decisions(scores=outputs_,costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
                 else:
-                    outputs_ = model.eval(X_val,problem_type)
-                    y_pred_ = outputs_
-                
-                outputs = np.vstack((outputs, outputs_)) if problem_type == 'clf' else np.append(outputs, outputs_)
-                y_pred = np.append(y_pred, y_pred_)
-                y_true = np.append(y_true, y_val)
-
+                    outputs[val_index] = model.eval(X_val,problem_type)
+                    y_pred[val_index] = outputs[val_index]
+                y_true[val_index] = y_val
             # Choose the appropriate scoring function
             if scoring == 'roc_auc_score':
                 scorings[feature] = eval(scoring)(y_true, outputs[:, 1] if problem_type == 'clf' else outputs)
@@ -671,9 +667,9 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
 
 def new_best(old,new,greater=True):
     if greater:
-        return new >= old
+        return new > old
     else:
-        return new <= old
+        return new < old
 
 def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
     
