@@ -431,7 +431,7 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
 
     return metrics_test_bootstrap, outputs_bootstrap, y_true_bootstrap, y_pred_bootstrap, IDs_test_bootstrap
 
-def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
+def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True):
     
     """
     Conducts nested cross-validation with recursive feature elimination (RFE) and hyperparameter tuning 
@@ -530,7 +530,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
             X_dev = pd.DataFrame(columns=X.columns,data=imputer_.transform(scaler_.transform(X_dev)))
             X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(scaler_.transform(X_test)))
-            best_features = rfe(Model(model_rfecv,scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold)
+            best_features = rfe(Model(model_rfecv,scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold) if feature_selection else X.columns
             best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter,scoring,problem_type,cmatrix,priors,threshold)
 
             if 'n_estimators' in best_params.keys():
@@ -725,7 +725,7 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     if 'random_state' in params.keys():
         params['random_state'] = int(42)
     
-    if hasattr(model_class(),'probability'):
+    if hasattr(model_class(),'probability') and problem_type == 'clf':
         params['probability'] = True
         
     y_true = np.empty(X.shape[0])
