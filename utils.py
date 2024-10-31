@@ -506,8 +506,8 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
         model_rfecv.kernel = 'linear'
     if hasattr(model_rfecv,'probability'):
         model_rfecv.probability = True
-    if hasattr(model_rfecv,'random_state'):
-        model_rfecv.random_state = 42
+    if hasattr(model_rfecv,'random_state') and problem_type == 'clf':
+        model_rfecv.random_state = int(42)
     
     IDs_val = np.empty((len(random_seeds_outer),X.shape[0]),dtype=object)
     
@@ -542,9 +542,9 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             elif 'max_depth' in best_params.keys():
                 best_params['max_depth'] = int(best_params['max_depth'])
             
-            if hasattr(model_class(),'random_state'):
+            if hasattr(model_class(),'random_state') and model_class != SVR:
                 best_params['random_state'] = int(42)
-            if hasattr(model_class(),'probability'):
+            if hasattr(model_class(),'probability') and model_class != SVR:
                 best_params['probability'] = True
 
             append_dict = {'random_seed':random_seed,'fold':k,'threshold':threshold,scoring:best_score}
@@ -676,7 +676,7 @@ def new_best(old,new,greater=True):
 def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
     
     search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space)
-    search.maximize(init_points=10,n_iter=n_iter)
+    search.maximize(init_points=5,n_iter=n_iter)
     return search.max['params'], search.max['target']
 
 def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None):
