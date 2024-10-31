@@ -676,7 +676,7 @@ def new_best(old,new,greater=True):
 def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
     
     search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space)
-    search.maximize(n_iter=n_iter)
+    search.maximize(init_points=10,n_iter=n_iter)
     return search.max['params'], search.max['target']
 
 def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None):
