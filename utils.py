@@ -22,6 +22,8 @@ from sklearn.utils import resample
 
 from bayes_opt import BayesianOptimization
 
+from skopt import BayesSearchCV
+
 class Model():
     def __init__(self,model,scaler=None,imputer=None,calibrator=None):
         self.model = model
@@ -533,11 +535,12 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
             X_dev = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_dev.columns,data=scaler_.transform(X_dev))))
             X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_test.columns,data=scaler_.transform(X_test))))
-            best_features = rfe(Model(model_rfecv,scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold) if feature_selection else X.columns
-            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter,scoring,problem_type,cmatrix,priors,threshold)
-
             print(f'Random seed {r+1}, Fold {k+1}')
 
+            best_features = rfe(Model(model_class(),scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold) if feature_selection else X.columns
+            
+            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter,scoring,problem_type,cmatrix,priors,threshold)
+            
             if 'n_estimators' in best_params.keys():
                 best_params['n_estimators'] = int(best_params['n_estimators'])
             elif 'n_neighbors' in best_params.keys():
@@ -621,7 +624,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
     features = list(X.columns)
     
     # Ascending if error, loss, or other metrics where lower is better
-    ascending = any(x in scoring for x in ['error', 'loss', 'norm'])
+    ascending = any(x in scoring for x in ['error', 'loss'])
     best_score = np.inf if ascending else -np.inf
     best_features = features.copy()
 
@@ -653,11 +656,11 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
                 y_true[val_index] = y_val
             # Choose the appropriate scoring function
             if scoring == 'roc_auc_score':
-                scorings[feature] = eval(scoring)(y_true, outputs[:, 1] if problem_type == 'clf' else outputs)
+                scorings[feature] = eval(scoring)(y_true, outputs[:, 1])
             elif scoring == 'norm_expected_cost':
-                scorings[feature] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
+                scorings[feature] = -average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
             elif scoring == 'norm_cross_entropy':
-                scorings[feature] = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
+                scorings[feature] = -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
             else:
                 scorings[feature] = eval(scoring)(y_true, y_pred)
             # Add other scoring metrics as needed
@@ -688,8 +691,10 @@ def new_best(old,new,greater=True):
 
 def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
     
-    search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space,verbose=0)
-    search.maximize(init_points=5,n_iter=n_iter)
+    search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space,verbose=2,random_state=42)
+    #search = BayesSearchCV(model(),hyperp_space,scoring=lambda params,X,y: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),n_iter=50,cv=None,random_state=42,verbose=2)
+    search.maximize(init_points=10,n_iter=n_iter)
+    #search.fit(X,y)
     return search.max['params'], search.max['target']
 
 def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None):
@@ -765,9 +770,9 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     if 'error' in scoring:
         return -scoring_func(y_true, outputs)
     elif scoring == 'norm_expected_cost':
-        return average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
+        return -average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
     elif scoring == 'norm_cross_entropy':
-        return LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
+        return -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
     elif scoring == 'roc_auc_score':
         return scoring_func(y_true, outputs[:, 1])
     else:
