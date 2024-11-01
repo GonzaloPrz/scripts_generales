@@ -578,7 +578,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
     results = Parallel(n_jobs=-1)(delayed(parallel_train)(r,random_seed_train) for r,random_seed_train in enumerate(random_seeds_outer))
     all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
     outputs_best = np.concatenate(([np.expand_dims(result[1],axis=0) for result in results]),axis=0)
-    y_true = results[0][2]
+    y_true = np.concatenate(([np.expand_dims(result[2],axis=0) for result in results]),axis=0)
     y_pred_best = np.concatenate(([np.expand_dims(result[3],axis=0) for result in results]),axis=0)
     IDs_val = np.concatenate(([np.expand_dims(result[4],axis=0) for result in results]),axis=0)
 
