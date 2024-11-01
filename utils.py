@@ -573,11 +573,13 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
     return all_models,outputs_best,y_true,y_pred_best,IDs_val
 
 from joblib import Parallel, delayed
+from sklearn.base import clone
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score
+import torch
+from copy import deepcopy
 
-def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf', cmatrix=None, priors=None, threshold=None, n_jobs=-1):
+def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf', cmatrix=None, priors=None, threshold=None):
     """
     Performs recursive feature elimination (RFE) to select the best subset of features based on a 
     scoring metric. Iteratively removes features that lead to the smallest decrease in the scoring metric.
@@ -602,8 +604,6 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf', cmat
         Class priors for probability calibration in classification.
     threshold : float, optional
         Decision threshold for classification tasks.
-    n_jobs : int, optional
-        Number of CPU cores to use for parallel processing (-1 uses all available cores).
 
     Returns
     -------
@@ -612,59 +612,67 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf', cmat
     """
 
     features = list(X.columns)
-    
+
     # Ascending if error, loss, or other metrics where lower is better
     ascending = any(x in scoring for x in ['error', 'loss', 'norm'])
     best_score = np.inf if ascending else -np.inf
     best_features = features.copy()
 
-    while len(features) > 1:
-        
-        def evaluate_feature(feature):
-            outputs = np.empty((X.shape[0], 2)) if problem_type == 'clf' else np.empty(X.shape[0])
-            y_pred = np.empty(X.shape[0])
-            y_true = np.empty(X.shape[0])
-            
-            for train_index, val_index in iterator.split(X, y):
-                X_train = X.iloc[train_index][[f for f in features if f != feature]]
-                X_val = X.iloc[val_index][[f for f in features if f != feature]]
-                y_train, y_val = y.iloc[train_index], y.iloc[val_index]
-                
-                model.train(X_train, y_train)
-                
-                if problem_type == 'clf':
-                    outputs_ = model.eval(X_val, problem_type)
-                    if threshold is not None:
-                        y_pred[val_index] = [1 if np.exp(x) > threshold else 0 for x in outputs_[:,1]]
-                    else:
-                        y_pred[val_index] = bayes_decisions(scores=outputs_, costs=cmatrix, priors=priors, score_type='log_posteriors')[0]
+    def evaluate_feature_removal(feature):
+        print('Evaluating without feature:', feature)
+
+        outputs = np.empty((X.shape[0], 2)) if problem_type == 'clf' else np.empty(X.shape[0])
+        y_pred = np.empty(X.shape[0])
+        y_true = np.empty(X.shape[0])
+
+        for train_index, val_index in iterator.split(X, y):
+            X_train = X.iloc[train_index][[f for f in features if f != feature]]
+            X_val = X.iloc[val_index][[f for f in features if f != feature]]
+            y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+
+            # Clone the model to avoid shared state
+            model_clone = deepcopy(model)
+            model_clone.train(X_train, y_train)
+
+            if problem_type == 'clf':
+                outputs_ = model_clone.eval(X_val, problem_type)
+                if threshold is not None:
+                    y_pred[val_index] = [1 if np.exp(x) > threshold else 0 for x in outputs_[:, 1]]
                 else:
-                    outputs[val_index] = model.eval(X_val, problem_type)
-                    y_pred[val_index] = outputs[val_index]
-                y_true[val_index] = y_val
-
-            # Choose the appropriate scoring function
-            if scoring == 'roc_auc_score':
-                score = roc_auc_score(y_true, outputs[:, 1] if problem_type == 'clf' else outputs)
-            elif scoring == 'norm_expected_cost':
-                score = average_cost(targets=np.array(y_true, dtype=int), decisions=np.array(y_pred, dtype=int), costs=cmatrix, priors=priors, adjusted=True)
-            elif scoring == 'norm_cross_entropy':
-                score = LogLoss(log_probs=torch.tensor(outputs), labels=torch.tensor(np.array(y_true), dtype=torch.int), priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(outputs), labels=torch.tensor(np.array(y_true), dtype=torch.int)).detach().numpy()
+                    y_pred[val_index] = bayes_decisions(scores=outputs_, costs=cmatrix, priors=priors, score_type='log_posteriors')[0]
             else:
-                score = r2_score(y_true, y_pred)
+                outputs[val_index] = model_clone.eval(X_val, problem_type)
+                y_pred[val_index] = outputs[val_index]
+            y_true[val_index] = y_val
 
-            return feature, score
-        
-        # Run evaluations in parallel
-        scorings = Parallel(n_jobs=n_jobs)(delayed(evaluate_feature)(feature) for feature in features)
+        # Choose the appropriate scoring function
+        if scoring == 'roc_auc_score':
+            score = eval(scoring)(y_true, outputs[:, 1] if problem_type == 'clf' else outputs)
+        elif scoring == 'norm_expected_cost':
+            score = average_cost(targets=np.array(y_true, dtype=int),
+                                 decisions=np.array(y_pred, dtype=int),
+                                 costs=cmatrix, priors=priors, adjusted=True)
+        elif scoring == 'norm_cross_entropy':
+            log_probs = torch.tensor(outputs)
+            labels = torch.tensor(np.array(y_true), dtype=torch.int)
+            priors_tensor = torch.tensor(priors) if priors is not None else None
+            score = LogLoss(log_probs=log_probs, labels=labels, priors=priors_tensor).detach().numpy()
+        elif scoring == 'r2_score':
+            score = r2_score(y_true, outputs)
+        else:
+            score = eval(scoring)(y_true, y_pred)
+        return {'feature': feature, 'score': score}
 
-        # Sort features by score to find the best to remove
-        scorings = pd.DataFrame(scorings, columns=['feature', 'score']).sort_values(
-            by='score', ascending=ascending).reset_index(drop=True)
-        
+    while len(features) > 1:
+        # Parallelize the evaluation over features
+        results = Parallel(n_jobs=-1)(delayed(evaluate_feature_removal)(feature) for feature in features)
+
+        # Create DataFrame from results
+        scorings = pd.DataFrame(results).sort_values(by='score', ascending=ascending).reset_index(drop=True)
+
         best_feature_score = scorings['score'][0]
         feature_to_remove = scorings['feature'][0]
-        
+
         # If improvement is found, update best score and feature set
         if new_best(best_score, best_feature_score, not ascending):
             best_score = best_feature_score
