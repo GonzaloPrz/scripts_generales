@@ -572,8 +572,12 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             
     return all_models,outputs_best,y_true,y_pred_best,IDs_val
 
-def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatrix=None,priors=None,threshold=None):
-    
+from joblib import Parallel, delayed
+import numpy as np
+import pandas as pd
+from sklearn.metrics import roc_auc_score
+
+def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf', cmatrix=None, priors=None, threshold=None, n_jobs=-1):
     """
     Performs recursive feature elimination (RFE) to select the best subset of features based on a 
     scoring metric. Iteratively removes features that lead to the smallest decrease in the scoring metric.
@@ -598,12 +602,13 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
         Class priors for probability calibration in classification.
     threshold : float, optional
         Decision threshold for classification tasks.
+    n_jobs : int, optional
+        Number of CPU cores to use for parallel processing (-1 uses all available cores).
 
     Returns
     -------
     best_features : list
         List of selected features after recursive feature elimination.
-        
     """
 
     features = list(X.columns)
@@ -614,11 +619,8 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
     best_features = features.copy()
 
     while len(features) > 1:
-        scorings = {}  # Dictionary to hold scores for each feature removal
         
-        for feature in features:
-            print('Evaluating without feature:', feature)
-            
+        def evaluate_feature(feature):
             outputs = np.empty((X.shape[0], 2)) if problem_type == 'clf' else np.empty(X.shape[0])
             y_pred = np.empty(X.shape[0])
             y_true = np.empty(X.shape[0])
@@ -631,28 +633,33 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
                 model.train(X_train, y_train)
                 
                 if problem_type == 'clf':
-                    outputs_ = model.eval(X_val,problem_type)
+                    outputs_ = model.eval(X_val, problem_type)
                     if threshold is not None:
                         y_pred[val_index] = [1 if np.exp(x) > threshold else 0 for x in outputs_[:,1]]
                     else:
-                        y_pred[val_index] = bayes_decisions(scores=outputs_,costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
+                        y_pred[val_index] = bayes_decisions(scores=outputs_, costs=cmatrix, priors=priors, score_type='log_posteriors')[0]
                 else:
-                    outputs[val_index] = model.eval(X_val,problem_type)
+                    outputs[val_index] = model.eval(X_val, problem_type)
                     y_pred[val_index] = outputs[val_index]
                 y_true[val_index] = y_val
+
             # Choose the appropriate scoring function
             if scoring == 'roc_auc_score':
-                scorings[feature] = eval(scoring)(y_true, outputs[:, 1] if problem_type == 'clf' else outputs)
+                score = roc_auc_score(y_true, outputs[:, 1] if problem_type == 'clf' else outputs)
             elif scoring == 'norm_expected_cost':
-                scorings[feature] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
+                score = average_cost(targets=np.array(y_true, dtype=int), decisions=np.array(y_pred, dtype=int), costs=cmatrix, priors=priors, adjusted=True)
             elif scoring == 'norm_cross_entropy':
-                scorings[feature] = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
+                score = LogLoss(log_probs=torch.tensor(outputs), labels=torch.tensor(np.array(y_true), dtype=torch.int), priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(outputs), labels=torch.tensor(np.array(y_true), dtype=torch.int)).detach().numpy()
             else:
-                scorings[feature] = eval(scoring)(y_true, y_pred)
-            # Add other scoring metrics as needed
+                score = eval(scoring)(y_true, y_pred)
+
+            return feature, score
+        
+        # Run evaluations in parallel
+        scorings = Parallel(n_jobs=n_jobs)(delayed(evaluate_feature)(feature) for feature in features)
 
         # Sort features by score to find the best to remove
-        scorings = pd.DataFrame(list(scorings.items()), columns=['feature', 'score']).sort_values(
+        scorings = pd.DataFrame(scorings, columns=['feature', 'score']).sort_values(
             by='score', ascending=ascending).reset_index(drop=True)
         
         best_feature_score = scorings['score'][0]
