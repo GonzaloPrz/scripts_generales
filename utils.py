@@ -651,7 +651,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf', cmat
             elif scoring == 'norm_cross_entropy':
                 score = LogLoss(log_probs=torch.tensor(outputs), labels=torch.tensor(np.array(y_true), dtype=torch.int), priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(outputs), labels=torch.tensor(np.array(y_true), dtype=torch.int)).detach().numpy()
             else:
-                score = eval(scoring)(y_true, y_pred)
+                score = r2_score(y_true, y_pred)
 
             return feature, score
         
