@@ -531,10 +531,12 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             scaler_ = scaler().fit(X_dev)
             imputer_ = imputer().fit(X_dev)
 
-            X_dev = pd.DataFrame(columns=X.columns,data=imputer_.transform(scaler_.transform(X_dev)))
-            X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(scaler_.transform(X_test)))
+            X_dev = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_dev.columns,data=scaler_.transform(X_dev))))
+            X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_test.columns,data=scaler_.transform(X_test))))
             best_features = rfe(Model(model_rfecv,scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold) if feature_selection else X.columns
             best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter,scoring,problem_type,cmatrix,priors,threshold)
+
+            print(f'Random seed {r+1}, Fold {k+1}')
 
             if 'n_estimators' in best_params.keys():
                 best_params['n_estimators'] = int(best_params['n_estimators'])
@@ -627,7 +629,6 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
         scorings = {}  # Dictionary to hold scores for each feature removal
         
         for feature in features:
-            print('Evaluating without feature:', feature)
             
             outputs = np.empty((X.shape[0], 2)) if problem_type == 'clf' else np.empty(X.shape[0])
             y_pred = np.empty(X.shape[0])
@@ -673,33 +674,8 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
             best_score = best_feature_score
             features.remove(feature_to_remove)
             best_features = features.copy()
-            print(f"Removing feature: {feature_to_remove}, New Best Score: {best_score}")
         else:
             # Stop if no improvement
-            print("No further improvement. Stopping feature elimination.")
-            break
-
-    return best_features
-
-    while len(features) > 1:
-        # Parallelize the evaluation over features
-        results = Parallel(n_jobs=-1)(delayed(evaluate_feature_removal)(feature) for feature in features)
-
-        # Create DataFrame from results
-        scorings = pd.DataFrame(results).sort_values(by='score', ascending=ascending).reset_index(drop=True)
-
-        best_feature_score = scorings['score'][0]
-        feature_to_remove = scorings['feature'][0]
-
-        # If improvement is found, update best score and feature set
-        if new_best(best_score, best_feature_score, not ascending):
-            best_score = best_feature_score
-            features.remove(feature_to_remove)
-            best_features = features.copy()
-            print(f"Removing feature: {feature_to_remove}, New Best Score: {best_score}")
-        else:
-            # Stop if no improvement
-            print("No further improvement. Stopping feature elimination.")
             break
 
     return best_features
@@ -712,7 +688,7 @@ def new_best(old,new,greater=True):
 
 def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
     
-    search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space)
+    search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space,verbose=0)
     search.maximize(init_points=5,n_iter=n_iter)
     return search.max['params'], search.max['target']
 
