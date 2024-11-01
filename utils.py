@@ -492,13 +492,6 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
     features = X.columns
     
     iterator_inner.random_state = 42
-    all_models = pd.DataFrame(columns=['random_seed','fold','threshold',scoring] + list(hyperp_space.keys()) + list(features))
-
-    outputs_best = np.empty((len(random_seeds_outer),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_outer),X.shape[0]))
-
-    y_true = np.empty((len(random_seeds_outer),X.shape[0]))
-
-    y_pred_best = np.empty((len(random_seeds_outer),X.shape[0]))
 
     model_rfecv = model_class()
 
@@ -508,10 +501,18 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
         model_rfecv.probability = True
     if hasattr(model_rfecv,'random_state') and problem_type == 'clf':
         model_rfecv.random_state = int(42)
-    
-    IDs_val = np.empty((len(random_seeds_outer),X.shape[0]),dtype=object)
-    
-    for r,random_seed in enumerate(random_seeds_outer):
+
+    def parallel_train(r,random_seed):
+        models_r = pd.DataFrame(columns=['random_seed','fold','threshold',scoring] + list(hyperp_space.keys()) + list(features))
+
+        outputs_best_r = np.empty((X.shape[0],2)) if problem_type == 'clf' else np.empty((X.shape[0]))
+
+        y_true_r = np.empty(X.shape[0])
+
+        y_pred_best_r = np.empty((X.shape[0]))
+
+        IDs_val_r = np.empty(X.shape[0],dtype=object)
+
         iterator_outer.random_state = random_seed
         
         for k,(train_index_out,test_index_out) in enumerate(iterator_outer.split(X,y)): 
@@ -523,9 +524,9 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             X_test = X_test.reset_index(drop=True)
             y_test = y_test.reset_index(drop=True)
 
-            y_true[r,test_index_out] = y_test
+            y_true_r[test_index_out] = y_test
             #ID_dev, ID_test = IDs[train_index_out], IDs[test_index_out]
-            IDs_val[r,test_index_out] = IDs[test_index_out]
+            IDs_val_r[test_index_out] = IDs[test_index_out]
 
             scaler_ = scaler().fit(X_dev)
             imputer_ = imputer().fit(X_dev)
@@ -551,7 +552,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             append_dict.update(best_params)
             append_dict.update({feature:1 if feature in best_features else 0 for feature in X_dev.columns}) 
 
-            all_models.loc[len(all_models.index),:] = append_dict
+            models_r.loc[len(models_r.index),:] = append_dict
 
             model = Model(model_class(**best_params),scaler,imputer)
             model.train(X_dev[best_features],y_dev)
@@ -559,18 +560,28 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             if problem_type == 'clf':
                 outputs_best_ = model.eval(X_test[best_features],problem_type)
                 if threshold is not None:
-                    y_pred_best_ = [1 if np.exp(x) > threshold else 0 for x in outputs_best[r,test_index_out][:,1]]
+                    y_pred_best_ = [1 if np.exp(x) > threshold else 0 for x in outputs_best_r[test_index_out][:,1]]
                 else:
-                    y_pred_best_= bayes_decisions(scores=outputs_best[r,test_index_out],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
+                    y_pred_best_= bayes_decisions(scores=outputs_best_r[test_index_out],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
                 
-                y_pred_best[r,test_index_out] = y_pred_best_
+                y_pred_best_r[test_index_out] = y_pred_best_
 
             else:
                 outputs_best_ = model.eval(X_test[best_features],problem_type)
-                y_pred_best[r,test_index_out] = outputs_best_
-            outputs_best[r,test_index_out] = outputs_best_
-            
+                y_pred_best_r[test_index_out] = outputs_best_
+            outputs_best_r[test_index_out] = outputs_best_
+
+        return models_r,outputs_best_r,y_true_r,y_pred_best_r,IDs_val_r
+    
+    results = Parallel(n_jobs=-1)(delayed(parallel_train)(r,random_seed_train) for r,random_seed_train in enumerate(random_seeds_outer))
+    all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
+    outputs_best = np.concatenate(([np.expand_dims(result[1],axis=0) for result in results]),axis=0)
+    y_true = results[0][2]
+    y_pred_best = np.concatenate(([np.expand_dims(result[3],axis=0) for result in results]),axis=0)
+    IDs_val = np.concatenate(([np.expand_dims(result[4],axis=0) for result in results]),axis=0)
+
     return all_models,outputs_best,y_true,y_pred_best,IDs_val
+
 def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatrix=None,priors=None,threshold=None):
     
     """
