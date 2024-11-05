@@ -685,9 +685,9 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
 
 def new_best(old,new,greater=True):
     if greater:
-        return new > old
+        return new >= old
     else:
-        return new < old
+        return new <= old
 
 def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
     
