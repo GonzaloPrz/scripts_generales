@@ -435,7 +435,7 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
 
     return metrics_test_bootstrap, outputs_bootstrap, y_true_bootstrap, y_pred_bootstrap, IDs_test_bootstrap
 
-def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True):
+def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True):
     
     """
     Conducts nested cross-validation with recursive feature elimination (RFE) and hyperparameter tuning 
@@ -539,7 +539,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
             best_features = rfe(Model(model_class(),scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold) if feature_selection else X.columns
             
-            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
+            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
             
             if 'n_estimators' in best_params.keys():
                 best_params['n_estimators'] = int(best_params['n_estimators'])
@@ -690,7 +690,7 @@ def new_best(old,new,greater=True):
     else:
         return new < old
 
-def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=150,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42):
+def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42):
     
     def objective(**params):
         return scoring_bo(params, model, scaler, imputer, X, y, iterator, scoring, problem_type, 
