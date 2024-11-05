@@ -539,7 +539,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
             best_features = rfe(Model(model_class(),scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold) if feature_selection else X.columns
             
-            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter,scoring,problem_type,cmatrix,priors,threshold)
+            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
             
             if 'n_estimators' in best_params.keys():
                 best_params['n_estimators'] = int(best_params['n_estimators'])
@@ -686,17 +686,26 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
 
 def new_best(old,new,greater=True):
     if greater:
-        return new >= old
+        return new > old
     else:
-        return new <= old
+        return new < old
 
-def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None):
+def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=150,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42):
     
-    search = BayesianOptimization(lambda **params: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),hyperp_space,verbose=2,random_state=42)
+    def objective(**params):
+        return scoring_bo(params, model, scaler, imputer, X, y, iterator, scoring, problem_type, 
+                          cmatrix, priors, threshold)
+    
+    search = BayesianOptimization(f=objective,pbounds=hyperp_space,verbose=2,random_state=random_state)
     #search = BayesSearchCV(model(),hyperp_space,scoring=lambda params,X,y: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),n_iter=50,cv=None,random_state=42,verbose=2)
-    search.maximize(init_points=10,n_iter=n_iter)
+    search.maximize(init_points=init_points,n_iter=n_iter)
     #search.fit(X,y)
-    return search.max['params'], search.max['target']
+    best_params = search.max['params']
+    int_params = ['n_estimators', 'n_neighbors', 'max_depth']
+    for param in int_params:
+        if param in best_params:
+            best_params[param] = int(best_params[param])
+    return best_params, search.max['target']
 
 def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None):
 
@@ -746,7 +755,7 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     if 'random_state' in params.keys():
         params['random_state'] = int(42)
     
-    if hasattr(model_class(),'probability') and problem_type == 'clf':
+    if hasattr(model_class,'probability') and problem_type == 'clf':
         params['probability'] = True
         
     y_true = np.empty(X.shape[0])
@@ -756,14 +765,15 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     for train_index, test_index in iterator.split(X,y):
         model = Model(model_class(**params),scaler,imputer)
         model.train(X.loc[train_index],y[train_index])
+        outputs[test_index] = model.eval(X.loc[test_index],problem_type)
+
         if problem_type == 'clf':
-            outputs[test_index] = model.eval(X.loc[test_index],problem_type)
             if threshold is not None:
                 y_pred[test_index] = [1 if np.exp(x) > threshold else 0 for x in outputs[test_index,1]]
             else:
                 y_pred[test_index] = bayes_decisions(scores=outputs[test_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
         else:
-            outputs[test_index] = model.eval(X.loc[test_index],problem_type)
+            y_pred[test_index] = outputs[test_index]
         y_true[test_index] = y[test_index]
     
     scoring_func = getattr(metrics, scoring, None)
@@ -775,7 +785,7 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     elif scoring == 'norm_cross_entropy':
         return -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
     elif scoring == 'roc_auc_score':
-        return scoring_func(y_true, outputs[:, 1])
+        return scoring_func(y_true, outputs[:,1])
     else:
         return scoring_func(y_true, y_pred)
 
