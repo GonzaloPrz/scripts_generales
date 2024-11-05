@@ -632,7 +632,6 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
         scorings = {}  # Dictionary to hold scores for each feature removal
         
         for feature in features:
-            
             outputs = np.empty((X.shape[0], 2)) if problem_type == 'clf' else np.empty(X.shape[0])
             y_pred = np.empty(X.shape[0])
             y_true = np.empty(X.shape[0])
@@ -677,7 +676,9 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
             best_score = best_feature_score
             features.remove(feature_to_remove)
             best_features = features.copy()
+            print(f'Removing feature: {feature}. New best score: {best_score}')
         else:
+            print('No improvement found. Stopping RFE.')
             # Stop if no improvement
             break
 
