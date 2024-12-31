@@ -1,7 +1,6 @@
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.neighbors import NearestNeighbors
 import numpy as np
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder
 
 def estimate_propensity_scores(df, treatment_col, covariate_cols):
@@ -10,48 +9,103 @@ def estimate_propensity_scores(df, treatment_col, covariate_cols):
     propensity_scores = model.predict_proba(df[covariate_cols])[:, 1]
     return propensity_scores
 
-# Perform nearest neighbor matching
-def perform_matching(df, treatment_col, covariate_cols,factor_vars, treatment_value=1,caliper=0.05):
-        
-    for col in factor_vars:    
+def perform_matching(df, treatment_col, covariate_cols, factor_vars, 
+                     treatment_value=1, caliper=0.05):
+    """
+    Realiza 1:1 matching sin reemplazo con caliper bidireccional,
+    eliminando tanto tratados como controles que no encuentren match.
+    """
+
+    # Codificamos variables categóricas para LogisticRegression
+    for col in factor_vars:
         df[col] = LabelEncoder().fit_transform(df[col])
-        
+
+    # 1. Calculamos los propensity scores
     propensity_scores = estimate_propensity_scores(df, treatment_col, covariate_cols)
-    
-    df['propensity_score'] = propensity_scores
-    
-    treated = df[df[treatment_col] == treatment_value].reset_index(drop=True)
-    control = df[df[treatment_col] != treatment_value].reset_index(drop=True)
-    
-    n_treated = treated.shape[0]
-    n_control = control.shape[0]
-    
-    if n_treated > n_control:
-        matched_data = treated.copy()
-        treated = control
-        control = matched_data
+    df["propensity_score"] = propensity_scores
+
+    # 2. Separamos en tratados y controles
+    treated = df[df[treatment_col] == treatment_value].copy()
+    control = df[df[treatment_col] != treatment_value].copy()
+
+    # 3. Ordenamos cada grupo por su propensity_score
+    treated = treated.sort_values(by="propensity_score").reset_index(drop=True)
+    control = control.sort_values(by="propensity_score").reset_index(drop=True)
+
+    # 4. Identificar quién es el grupo minoritario y quién el mayoritario
+    #    para recorrer sólo el menor y buscar match en el mayor.
+    if len(treated) <= len(control):
+        smaller_group = treated
+        larger_group = control
+        label_smaller = "treated"
     else:
-        matched_data = control.copy()
+        smaller_group = control
+        larger_group = treated
+        label_smaller = "control"
+
+    matched_smaller = []
+    matched_larger = []
+
+    # 5. Realizamos el matching
+    # Usamos dos índices i (para el menor) y j (para el mayor).
+    j = 0
+    for i in range(len(smaller_group)):
+        score_i = smaller_group.loc[i, "propensity_score"]
+        # Avanzamos j mientras sea posible para encontrar el "mejor match"
+        # pero que aún esté dentro del caliper.
+        
+        min_dist = float("inf")
+        chosen_j = None
+        
+        # Recorremos a partir de j, ya que los anteriores han sido evaluados o usados
+        for k in range(j, len(larger_group)):
+            score_k = larger_group.loc[k, "propensity_score"]
+            
+            # Distancia entre scores
+            dist = abs(score_i - score_k)
+            
+            # Si está dentro del caliper y es la más pequeña encontrada hasta ahora
+            if dist <= caliper and dist < min_dist:
+                min_dist = dist
+                chosen_j = k
+            
+            # Si el score_k se vuelve mayor que score_i + caliper, podemos romper
+            # (dado que el larger_group está ordenado, no habrá más matches).
+            if score_k > score_i + caliper:
+                break
+        
+        # Si found match (chosen_j no es None)
+        if chosen_j is not None:
+            # Agregamos ambos a la lista de emparejados
+            matched_smaller.append(smaller_group.iloc[i])
+            matched_larger.append(larger_group.iloc[chosen_j])
+            
+            # Eliminamos ese índice del grupo mayor para que no sea reutilizado
+            larger_group.drop(chosen_j, inplace=True)
+            # Reseteamos el índice del larger_group y lo volvemos a ordenar por score
+            larger_group = larger_group.sort_values(by="propensity_score").reset_index(drop=True)
+            
+            # No avanzamos j de forma secuencial fija, porque reordenamos y resetamos índice
+            # de larger_group en cada match. Lo que sí podríamos hacer es mantener la
+            # posición 'chosen_j' pero ya el reindexing lo cambia. Por simplicidad,
+            # cada vez lo recorremos completo. (Si quisiéramos optimizar más, 
+            # podríamos diseñar una búsqueda binaria o uso de nearest neighbors).
+            
+        # Si no se encontró match, descartamos ese individuo de smaller_group (no hacemos nada).
+        # Se "pierde" y no se añade a matched_smaller.
+
+    # 6. Reconstruimos DataFrame final de matches
+    matched_smaller = pd.DataFrame(matched_smaller)
+    matched_larger = pd.DataFrame(matched_larger)
     
-    #Perform matching without replacement
-    nbrs = NearestNeighbors(n_neighbors=control.shape[0],radius=caliper).fit(control[['propensity_score']])
+    # Unimos la data en el mismo orden
+    matched_data = pd.concat([matched_smaller, matched_larger], axis=0)
     
-    _, indices = nbrs.kneighbors(treated[['propensity_score']])
+    # 7. Restituimos el orden original de los datos, si se desea
+    matched_data = matched_data.sort_values("propensity_score").reset_index(drop=True)
     
-    matched_controls = pd.DataFrame(columns=control.columns)
-    
-    matched_indices = []
-    for i, index in enumerate(indices):
-        if i == 0:
-            matched_controls.loc[len(matched_controls.index),:] = control.loc[index[0],:]
-            matched_indices.append(index[0])
-        else:
-            for idx in index:
-                if idx not in matched_indices:
-                    matched_controls.loc[len(matched_controls.index),:] = control.loc[idx,:]
-                    matched_indices.append(idx)
-                    break
-    
-    matched_data = pd.concat([treated,matched_controls],axis=0)  
-    matched_data = matched_data.reset_index(drop=True) 
+    # (Opcional) Si se quiere reetiquetar el grupo mayor y menor en caso de que
+    # se haya intercambiado, se puede realizar aquí. Sin embargo, mientras las
+    # columnas de 'treatment_col' sigan correctas, no es necesario.
+
     return matched_data
