@@ -770,6 +770,7 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
         model.train(X.loc[train_index],y[train_index])
         outputs[test_index] = model.eval(X.loc[test_index],problem_type)
 
+        outputs[test_index] = np.clip(outputs[test_index],-1e6,1e6)
         if problem_type == 'clf':
             if threshold is not None:
                 y_pred[test_index] = [1 if np.exp(x) > threshold else 0 for x in outputs[test_index,1]]
