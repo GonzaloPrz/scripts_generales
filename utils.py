@@ -66,7 +66,15 @@ class Model():
         else:
             score = self.model.predict(X_t)    
 
-        return score
+        score_filled = score.copy()
+
+        nan_indices_col0 = np.isnan(score[:, 0])  # True where first column is NaN
+        nan_indices_col1 = np.isnan(score[:, 1])  # True where second column is NaN
+
+        # Replace them accordingly:
+        score_filled[nan_indices_col0, 0] = -1e6
+        score_filled[nan_indices_col1, 1] =  1e6
+        return score_filled
 
 def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,threshold=None):
     """
@@ -89,7 +97,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
         cmatrix = CostMatrix([[0,1],[1,0]])
     metrics = dict([(metric,[]) for metric in metrics_names])
 
-    y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(np.exp(y_scores[:,1]) > threshold,dtype=int)
+    y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(y_scores[:,1] > threshold,dtype=int)
 
     y_scores = np.clip(y_scores,-1e6,1e6)
 
@@ -565,7 +573,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             if problem_type == 'clf':
                 outputs_best_ = model.eval(X_test[best_features],problem_type)
                 if threshold is not None:
-                    y_pred_best_ = [1 if np.exp(x) > threshold else 0 for x in outputs_best_r[test_index_out][:,1]]
+                    y_pred_best_ = [1 if x > threshold else 0 for x in outputs_best_r[test_index_out][:,1]]
                 else:
                     y_pred_best_= bayes_decisions(scores=outputs_best_r[test_index_out],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
                 
@@ -645,8 +653,9 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
                 
                 if problem_type == 'clf':
                     outputs_ = model.eval(X_val,problem_type)
+                    outputs[val_index] = outputs_
                     if threshold is not None:
-                        y_pred[val_index] = [1 if np.exp(x) > threshold else 0 for x in outputs_[:,1]]
+                        y_pred[val_index] = [1 if x > threshold else 0 for x in outputs_[:,1]]
                     else:
                         y_pred[val_index] = bayes_decisions(scores=outputs_,costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
                 else:
@@ -655,7 +664,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
                 y_true[val_index] = y_val
             # Choose the appropriate scoring function
             #Replace nans in outpts with -1e6
-            outputs = np.clip(outputs,-1e6,1e6)
+            
             
             if scoring == 'roc_auc_score':
                 scorings[feature] = eval(scoring)(y_true, outputs[:, 1])
@@ -773,7 +782,7 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
         outputs[test_index] = np.clip(outputs[test_index],-1e6,1e6)
         if problem_type == 'clf':
             if threshold is not None:
-                y_pred[test_index] = [1 if np.exp(x) > threshold else 0 for x in outputs[test_index,1]]
+                y_pred[test_index] = [1 if x > threshold else 0 for x in outputs[test_index,1]]
             else:
                 y_pred[test_index] = bayes_decisions(scores=outputs[test_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
         else:
