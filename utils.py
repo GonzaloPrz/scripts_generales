@@ -97,7 +97,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
         The function calculates the evaluation metrics for the predicted scores and true labels.
     """
     if cmatrix is None:
-        cmatrix = CostMatrix([[0,1],[1,0]])
+        cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y_true)))
     metrics = dict([(metric,[]) for metric in metrics_names])
 
     y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(y_scores[:,1] > threshold,dtype=int)
@@ -208,7 +208,7 @@ def CV(model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,ran
     """
      
     if cmatrix is None:
-        cmatrix = CostMatrix([[0,1],[1,0]])
+        cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y)))
 
     model_params = params.copy()
 
@@ -229,7 +229,7 @@ def CV(model_class,params,scaler,imputer,X,y,all_features,threshold,iterator,ran
     IDs_dev = np.empty((len(random_seeds_train),X.shape[0]),dtype=object)
     y_pred = np.empty((len(random_seeds_train),X.shape[0]))
 
-    outputs_dev = np.empty((len(random_seeds_train),X.shape[0],2)) if problem_type == 'clf' else np.empty((len(random_seeds_train),X.shape[0]))
+    outputs_dev = np.empty((len(random_seeds_train),X.shape[0],len(np.unique(y)))) if problem_type == 'clf' else np.empty((len(random_seeds_train),X.shape[0]))
 
     for r,random_seed in enumerate(random_seeds_train):
 
