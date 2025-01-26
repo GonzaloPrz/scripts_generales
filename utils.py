@@ -415,7 +415,7 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
     if not isinstance(X_test, pd.DataFrame):
         X_test = pd.DataFrame(X_test)
 
-    outputs_bootstrap = np.empty((0, 2)) if problem_type == 'clf' else np.empty(0)
+    outputs_bootstrap = np.empty((0, len(np.unique(y_dev)))) if problem_type == 'clf' else np.empty(0)
     y_true_bootstrap = np.empty(0)
     y_pred_bootstrap = np.empty(0)
     IDs_test_bootstrap = np.empty(0, dtype=object)
