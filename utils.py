@@ -424,20 +424,20 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
     for b_train in range(np.max((1,n_boot_train))):
         boot_index_train = resample(X_dev.index, n_samples=X_dev.shape[0], replace=True, random_state=b_train) if n_boot_train > 0 else X_dev.index
         model = Model(model_class(**params),scaler,imputer)
-        model.train(X_dev.loc[boot_index_train], y_dev[boot_index_train])
+        model.train(X_dev.loc[boot_index_train], y_dev.squeeze()[boot_index_train])
 
         for b_test in range(np.max((1,n_boot_test))):
             boot_index = resample(X_test.index, n_samples=X_test.shape[0], replace=True, random_state=b_train * np.max((1,n_boot_train)) + b_test) if n_boot_test > 0 else X_test.index
 
-            y_true_bootstrap = np.concatenate((y_true_bootstrap,y_test[boot_index]))
-            IDs_test_bootstrap = np.concatenate((IDs_test_bootstrap,IDs_test[boot_index]))
+            y_true_bootstrap = np.concatenate((y_true_bootstrap,y_test.squeeze()[boot_index]))
+            IDs_test_bootstrap = np.concatenate((IDs_test_bootstrap,IDs_test.squeeze()[boot_index]))
             outputs = model.eval(X_test.loc[boot_index, :], problem_type)
 
             if problem_type == 'clf':
-                metrics_test, y_pred = get_metrics_clf(outputs, y_test[boot_index], metrics, cmatrix, priors,threshold)
+                metrics_test, y_pred = get_metrics_clf(outputs, y_test.squeeze()[boot_index], metrics, cmatrix, priors,threshold)
                 y_pred_bootstrap = np.concatenate((y_pred_bootstrap,y_pred))
             else:
-                metrics_test = get_metrics_reg(outputs, y_test[boot_index], metrics)
+                metrics_test = get_metrics_reg(outputs, y_test.squeeze()[boot_index], metrics)
             
             outputs_bootstrap = np.concatenate((outputs_bootstrap,outputs))
 
