@@ -415,36 +415,12 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test, y_test, 
     if not isinstance(X_test, pd.DataFrame):
         X_test = pd.DataFrame(X_test)
 
-    outputs_bootstrap = np.empty((0, len(np.unique(y_dev)))) if problem_type == 'clf' else np.empty(0)
-    y_true_bootstrap = np.empty(0)
-    y_pred_bootstrap = np.empty(0)
-    IDs_test_bootstrap = np.empty(0, dtype=object)
-    metrics_test_bootstrap = {metric: np.empty(0) for metric in metrics}
+    model = Model(model_class(**params),scaler,imputer)
+    model.train(X_dev, y_dev)
 
-    for b_train in range(np.max((1,n_boot_train))):
-        boot_index_train = resample(X_dev.index, n_samples=X_dev.shape[0], replace=True, random_state=b_train) if n_boot_train > 0 else X_dev.index
-        model = Model(model_class(**params),scaler,imputer)
-        model.train(X_dev.loc[boot_index_train], y_dev.squeeze()[boot_index_train])
+    outputs = model.eval(X_test, problem_type)
 
-        for b_test in range(np.max((1,n_boot_test))):
-            boot_index = resample(X_test.index, n_samples=X_test.shape[0], replace=True, random_state=b_train * np.max((1,n_boot_train)) + b_test) if n_boot_test > 0 else X_test.index
-
-            y_true_bootstrap = np.concatenate((y_true_bootstrap,y_test.squeeze()[boot_index]))
-            IDs_test_bootstrap = np.concatenate((IDs_test_bootstrap,IDs_test.squeeze()[boot_index]))
-            outputs = model.eval(X_test.loc[boot_index, :], problem_type)
-
-            if problem_type == 'clf':
-                metrics_test, y_pred = get_metrics_clf(outputs, y_test.squeeze()[boot_index], metrics, cmatrix, priors,threshold)
-                y_pred_bootstrap = np.concatenate((y_pred_bootstrap,y_pred))
-            else:
-                metrics_test = get_metrics_reg(outputs, y_test.squeeze()[boot_index], metrics)
-            
-            outputs_bootstrap = np.concatenate((outputs_bootstrap,outputs))
-
-            for metric in metrics:
-                metrics_test_bootstrap[metric] = np.concatenate((metrics_test_bootstrap[metric],[metrics_test[metric]]))
-
-    return metrics_test_bootstrap, outputs_bootstrap, y_true_bootstrap, y_pred_bootstrap, IDs_test_bootstrap
+    return outputs
 
 def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True):
     
