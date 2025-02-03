@@ -302,9 +302,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
 
     def process_combination(c, feature_set, threshold):
         params = hyperp.loc[c, :].to_dict()
-        model_params, outputs_dev, y_dev, y_pred, IDs_dev = CV(model, params, scaler, imputer, X[feature_set], y, features, threshold, iterator, random_seeds_train, IDs, cmatrix, priors, problem_type)
-        model_params['features'] = feature_set
-        return model_params, outputs_dev, y_dev, y_pred, IDs_dev
+        return CV(model, params, scaler, imputer, X[feature_set], y, features, threshold, iterator, random_seeds_train, IDs, cmatrix, priors, problem_type)
 
     if parallel:
         results = Parallel(n_jobs=-1)(delayed(process_combination)(c, feature_set, threshold) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
