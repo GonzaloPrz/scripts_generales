@@ -15,10 +15,7 @@ from psrcal.losses import LogLoss
 
 from joblib import Parallel, delayed
 
-import tqdm,pdb
-
-from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.utils import resample 
+import math
 
 from bayes_opt import BayesianOptimization
 
@@ -79,7 +76,7 @@ class Model():
             score_filled = score
         return score_filled
 
-def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,threshold=None):
+def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,threshold=None,weights=None):
     """
     Calculates evaluation metrics for the predicted scores and true labels.
 
@@ -110,9 +107,9 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
         elif m == 'norm_expected_cost':
             metrics[m] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
         elif m == 'roc_auc':
-            metrics[m] = roc_auc_score(y_true=y_true,y_score=y_scores[:,1])
+            metrics[m] = roc_auc_score(y_true=y_true,y_score=y_scores[:,1],sample_weight=weights)
         else:
-            metrics[m] = eval(f'{m}_score')(y_true=np.array(y_true,dtype=int),y_pred=y_pred)
+            metrics[m] = eval(f'{m}_score')(y_true=np.array(y_true,dtype=int),y_pred=y_pred,sample_weight=weights)
 
     return metrics,y_pred
 
@@ -142,6 +139,52 @@ def conf_int_95(data):
     inf = np.nanpercentile(data,2.5)
     sup = np.nanpercentile(data,97.5) 
     return mean, inf, sup
+
+def initialize_hyperparameters(model_key,config,n_samples,default_hp,hp_range):
+    """
+    Initialize hyperparameter DataFrame for a given model.
+    In a production system this might be replaced by loading a pre-tuned configuration.
+    """
+    # Default hyperparameters (as a pandas DataFrame)
+
+    n = 0
+    hp = pd.DataFrame(default_hp.get(model_key),index=[0])
+
+    while hp.shape[0] < config['n_iter']+1 and n < 100:        
+        # If no default hyperparameters are available, generate random hyperparameters
+
+        new_hp = {key: np.random.choice(hp_range[model_key][key]) for key in hp_range[model_key].keys()}
+        
+        hp = pd.concat([hp, pd.DataFrame(new_hp,index=[0])], ignore_index=True)
+
+        #Drop duplicates:
+        hp = hp.drop_duplicates()
+        n += 1
+
+    return hp
+
+def generate_feature_sets(features, config, data_shape):
+    """
+    Generate a list of feature subsets for evaluation.
+    Either compute all combinations up to a maximum length or generate a random sample.
+    """
+    n_possible = int(config["feature_sample_ratio"] * data_shape[0] * (1 - config["test_size"]) * ((config["n_folds"] - 1) / config["n_folds"])) - 1
+    # Determine total number of combinations.
+    num_comb = sum(math.comb(len(features), k+1) for k in range(min(n_possible, len(features)-1)))
+    feature_sets = []
+    if config["n_iter_features"] > num_comb:
+        for k in range(min(n_possible, len(features)-1)):
+            for comb in itertools.combinations(features, k+1):
+                feature_sets.append(list(comb))
+    else:
+        for _ in range(int(config["n_iter_features"])):
+            # Use np.random.choice without replacement
+            sample_size = max(1, int(config["feature_sample_ratio"] * data_shape[0] * (1 - config["test_size"]) * ((config["n_folds"] - 1) / config["n_folds"])))
+            feature_sets.append(np.random.choice(features, size=np.min((len(features))), replace=False))
+    # Always include the full feature set.
+    feature_sets.append(list(features))
+    
+    return feature_sets
 
 def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iterator, random_seeds_train, IDs, cmatrix=None, priors=None, problem_type='clf'):
     """
@@ -302,7 +345,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
 
     def process_combination(c, feature_set, threshold):
         params = hyperp.loc[c, :].to_dict()
-        return CV(model, params, scaler, imputer, X[feature_set], y, features, threshold, iterator, random_seeds_train, IDs, cmatrix, priors, problem_type)
+        return CV(model, params, scaler, imputer, X[feature_set], y, features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, cmatrix, priors, problem_type)
 
     if parallel:
         results = Parallel(n_jobs=-1)(delayed(process_combination)(c, feature_set, threshold) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
@@ -316,6 +359,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
     IDs_dev = results[0][4]
 
     return all_models, all_outputs, all_y_pred, y_true, IDs_dev
+
 def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_type='clf'):
     
     """
