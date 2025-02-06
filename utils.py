@@ -53,15 +53,10 @@ class Model():
         X_t = pd.DataFrame(columns=features,data=self.scaler.transform(X.values)) if self.scaler is not None else X
         X_t = pd.DataFrame(columns=features,data=self.imputer.transform(X_t.values)) if self.imputer is not None else X_t
 
-        if problem_type == 'clf':
-            if hasattr(self.model,'predict_log_proba'):
-                score = self.model.predict_log_proba(X_t)
-            else:
-                prob = self.model.predict_proba(X_t)
-                prob = np.clip(prob,1e-6,1-1e-6)
-                score = np.log(prob)
-        else:
-            score = self.model.predict(X_t)    
+        
+        prob = self.model.predict_proba(X_t)
+        prob = np.clip(prob,1e-6,1-1e-6)
+        score = np.log(prob)
 
         score_filled = score.copy()
 
@@ -74,6 +69,7 @@ class Model():
             score_filled[nan_indices_col1, 1] =  1e6
         else:
             score_filled = score
+            
         return score_filled
 
 def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,threshold=None,weights=None):
@@ -256,7 +252,6 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
     X_dev = np.empty((n_seeds, n_samples, n_features))
     y_dev = np.empty((n_seeds, n_samples))
     IDs_dev = np.empty((n_seeds, n_samples), dtype=object)
-    y_pred = np.empty((n_seeds, n_samples))
     outputs_dev = np.empty((n_seeds, n_samples, n_classes)) if problem_type == 'clf' else np.empty((n_seeds, n_samples))
 
     def process_fold(r, random_seed):
@@ -265,22 +260,20 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
             model = Model(model_class(**params), scaler, imputer)
             if hasattr(model.model, 'random_state'):
                 model.model.random_state = 42
-
-            model.train(X.iloc[train_index], y.iloc[train_index])
-
+            
             X_dev[r, test_index] = X.iloc[test_index]
             y_dev[r, test_index] = y.iloc[test_index]
             IDs_dev[r, test_index] = IDs[test_index]
-            outputs_dev[r, test_index] = model.eval(X.iloc[test_index], problem_type)
+            try:
+                model.train(X.iloc[train_index], y.iloc[train_index])
 
-        if problem_type == 'clf':
-            _, y_pred[r] = get_metrics_clf(outputs_dev[r], y_dev[r], [], cmatrix, priors, threshold)
-        else:
-            y_pred[r] = outputs_dev[r]
-
+                outputs_dev[r, test_index] = model.eval(X.iloc[test_index], problem_type)
+            except:
+                outputs_dev[r,test_index] = np.nan
+            
     Parallel(n_jobs=-1)(delayed(process_fold)(r, random_seed) for r, random_seed in enumerate(random_seeds_train))
 
-    return model_params, outputs_dev, y_dev, y_pred, IDs_dev
+    return model_params, outputs_dev, y_dev, IDs_dev
 
 def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feature_sets, IDs, thresholds=[None], cmatrix=None, priors=None, parallel=True, problem_type='clf'):
     """
@@ -355,10 +348,9 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
     all_models = pd.concat([result[0] for result in results], ignore_index=True, axis=0)
     all_outputs = np.concatenate([np.expand_dims(result[1], axis=0) for result in results], axis=0)
     y_true = results[0][2]
-    all_y_pred = np.concatenate([np.expand_dims(result[3], axis=0) for result in results], axis=0)
-    IDs_dev = results[0][4]
+    IDs_dev = results[0][3]
 
-    return all_models, all_outputs, all_y_pred, y_true, IDs_dev
+    return all_models, all_outputs, y_true, IDs_dev
 
 def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_type='clf'):
     
