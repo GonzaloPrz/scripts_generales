@@ -89,6 +89,9 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
     Note:
         The function calculates the evaluation metrics for the predicted scores and true labels.
     """
+    if np.isnan(threshold):
+        threshold = None
+
     if cmatrix is None:
         cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y_true)))
     metrics = dict([(metric,[]) for metric in metrics_names])
@@ -146,7 +149,7 @@ def initialize_hyperparameters(model_key,config,n_samples,default_hp,hp_range):
     n = 0
     hp = pd.DataFrame(default_hp.get(model_key),index=[0])
 
-    while hp.shape[0] < config['n_iter']+1 and n < 100:        
+    while hp.shape[0] < config['n_iter']+1 and n < 1000:        
         # If no default hyperparameters are available, generate random hyperparameters
 
         new_hp = {key: np.random.choice(hp_range[model_key][key]) for key in hp_range[model_key].keys()}
@@ -166,23 +169,30 @@ def generate_feature_sets(features, config, data_shape):
     """
     n_possible = int(config["feature_sample_ratio"] * data_shape[0] * (1 - config["test_size"]) * ((config["n_folds"] - 1) / config["n_folds"])) - 1
     # Determine total number of combinations.
-    num_comb = sum(math.comb(len(features), k+1) for k in range(min(n_possible, len(features)-1)))
+    num_comb = sum(math.comb(len(features), k+1) for k in range(len(features)-1))
     feature_sets = []
     if config["n_iter_features"] > num_comb:
-        for k in range(min(n_possible, len(features)-1)):
+        for k in range(len(features)-1):
             for comb in itertools.combinations(features, k+1):
                 feature_sets.append(list(comb))
     else:
         for _ in range(int(config["n_iter_features"])):
             # Use np.random.choice without replacement
-            sample_size = max(1, int(config["feature_sample_ratio"] * data_shape[0] * (1 - config["test_size"]) * ((config["n_folds"] - 1) / config["n_folds"])))
-            feature_sets.append(np.random.choice(features, size=np.min((len(features))), replace=False))
+            n_iter = 0
+            new_set = list(np.random.choice(features, n_possible, replace=True))
+            #Eliminate duplicates
+            new_set = list(set(new_set))
+            while sorted(new_set) in feature_sets and n_iter < 100:
+                new_set = list(set(np.random.choice(features, n_possible, replace=True)))
+                n_iter += 1
+            feature_sets.append(sorted(new_set))    
+                
     # Always include the full feature set.
     feature_sets.append(list(features))
     
     return feature_sets
 
-def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iterator, random_seeds_train, IDs, cmatrix=None, priors=None, problem_type='clf'):
+def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iterator, random_seeds_train, IDs, cmatrix=None, priors=None, problem_type='clf',parallel=True):
     """
     Cross-validation function to train and evaluate a model with specified parameters, 
     feature engineering, and evaluation metrics. Supports both classification and regression.
@@ -231,7 +241,7 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
     IDs_dev : np.array
         Array of IDs for samples used in predictions across folds.
     """
-    
+
     if cmatrix is None:
         cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y)))
 
@@ -264,14 +274,12 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
             X_dev[r, test_index] = X.iloc[test_index]
             y_dev[r, test_index] = y.iloc[test_index]
             IDs_dev[r, test_index] = IDs[test_index]
-            try:
-                model.train(X.iloc[train_index], y.iloc[train_index])
+        
+            model.train(X.iloc[train_index], y.iloc[train_index])
 
-                outputs_dev[r, test_index] = model.eval(X.iloc[test_index], problem_type)
-            except:
-                outputs_dev[r,test_index] = np.nan
+            outputs_dev[r, test_index] = model.eval(X.iloc[test_index], problem_type)
             
-    Parallel(n_jobs=-1)(delayed(process_fold)(r, random_seed) for r, random_seed in enumerate(random_seeds_train))
+    Parallel(n_jobs=-1 if parallel else 1)(delayed(process_fold)(r, random_seed) for r, random_seed in enumerate(random_seeds_train))
 
     return model_params, outputs_dev, y_dev, IDs_dev
 
