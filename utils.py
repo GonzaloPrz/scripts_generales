@@ -41,7 +41,9 @@ class Model():
             params['n_neighbors'] = int(params['n_neighbors'])
         if 'max_depth' in params.keys():
             params['max_depth'] = int(params['max_depth']) if params['max_depth'] is not None else None
-
+        if 'max_iter' in params.keys():
+            params['max_iter'] = int(params['max_iter']) if params['max_iter'] is not None else None
+            
         self.model.set_params(**params)
         if hasattr(self.model,'precompute'):
             self.model.precompute = True
@@ -52,11 +54,12 @@ class Model():
         features = X.columns
         X_t = pd.DataFrame(columns=features,data=self.scaler.transform(X.values)) if self.scaler is not None else X
         X_t = pd.DataFrame(columns=features,data=self.imputer.transform(X_t.values)) if self.imputer is not None else X_t
-
-        
-        prob = self.model.predict_proba(X_t)
-        prob = np.clip(prob,1e-6,1-1e-6)
-        score = np.log(prob)
+        if problem_type == 'clf':
+            prob = self.model.predict_proba(X_t)
+            prob = np.clip(prob,1e-6,1-1e-6)
+            score = np.log(prob)
+        else:
+            score = self.model.predict(X_t)
 
         score_filled = score.copy()
 
@@ -67,8 +70,6 @@ class Model():
             # Replace them accordingly:
             score_filled[nan_indices_col0, 0] = -1e6
             score_filled[nan_indices_col1, 1] =  1e6
-        else:
-            score_filled = score
             
         return score_filled
 
@@ -245,13 +246,14 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
     if cmatrix is None:
         cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y)))
 
+    if 'priors' in params.keys():
+        if np.isnan(params['priors']):
+            params['priors'] = None
+
     model_params = params.copy()
     features = {feature: 0 for feature in all_features}
     features.update({feature: 1 for feature in X.columns})
     model_params.update(features)
-
-    if problem_type == 'clf':
-        model_params['threshold'] = threshold
 
     model_params = pd.DataFrame(model_params, index=[0])
 
@@ -280,6 +282,9 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
             outputs_dev[r, test_index] = model.eval(X.iloc[test_index], problem_type)
             
     Parallel(n_jobs=-1 if parallel else 1)(delayed(process_fold)(r, random_seed) for r, random_seed in enumerate(random_seeds_train))
+    
+    if problem_type == 'clf':
+        model_params['threshold'] = threshold
 
     return model_params, outputs_dev, y_dev, IDs_dev
 
@@ -344,14 +349,14 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
 
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
 
-    def process_combination(c, feature_set, threshold):
+    def process_combination(c, feature_set, threshold,problem_type):
         params = hyperp.loc[c, :].to_dict()
         return CV(model, params, scaler, imputer, X[feature_set], y, features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, cmatrix, priors, problem_type)
 
     if parallel:
-        results = Parallel(n_jobs=-1)(delayed(process_combination)(c, feature_set, threshold) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
+        results = Parallel(n_jobs=-1)(delayed(process_combination)(c, feature_set, threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
     else:
-        results = [process_combination(c, feature_set, threshold) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds)]
+        results = [process_combination(c, feature_set, threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds)]
 
     all_models = pd.concat([result[0] for result in results], ignore_index=True, axis=0)
     all_outputs = np.concatenate([np.expand_dims(result[1], axis=0) for result in results], axis=0)
