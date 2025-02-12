@@ -180,11 +180,11 @@ def generate_feature_sets(features, config, data_shape):
         for _ in range(int(config["n_iter_features"])):
             # Use np.random.choice without replacement
             n_iter = 0
-            new_set = list(np.random.choice(features, n_possible, replace=True))
+            new_set = list(np.random.choice(features, np.min((len(features),n_possible)), replace=True))
             #Eliminate duplicates
             new_set = list(set(new_set))
             while sorted(new_set) in feature_sets and n_iter < 100:
-                new_set = list(set(np.random.choice(features, n_possible, replace=True)))
+                new_set = list(set(np.random.choice(features, np,min((len(features),n_possible)), replace=True)))
                 n_iter += 1
             feature_sets.append(sorted(new_set))    
                 
