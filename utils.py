@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.neighbors import KNeighborsClassifier as KNNC 
 from sklearn.neighbors import KNeighborsRegressor as KNNR
 from sklearn.svm import SVR 
+from sklearn.utils import shuffle
 
 from sklearn import metrics
 
@@ -90,7 +91,10 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
     Note:
         The function calculates the evaluation metrics for the predicted scores and true labels.
     """
-    if np.isnan(threshold):
+    try:
+        if np.isnan(threshold):
+            threshold = None
+    except:
         threshold = None
 
     if cmatrix is None:
@@ -187,10 +191,13 @@ def generate_feature_sets(features, config, data_shape):
                 new_set = list(set(np.random.choice(features, np.min((len(features),n_possible)), replace=True)))
                 n_iter += 1
             feature_sets.append(sorted(new_set))    
-                
+            
     # Always include the full feature set.
     feature_sets.append(list(features))
     
+    # Ensure that the feature sets are unique.
+    feature_sets = list(set([tuple(set(feature_set)) for feature_set in feature_sets]))
+    feature_sets = [list(feature_set) for feature_set in feature_sets]
     return feature_sets
 
 def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iterator, random_seeds_train, IDs, cmatrix=None, priors=None, problem_type='clf',parallel=True):
@@ -265,24 +272,24 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
     y_dev = np.empty((n_seeds, n_samples))
     IDs_dev = np.empty((n_seeds, n_samples), dtype=object)
     outputs_dev = np.empty((n_seeds, n_samples, n_classes)) if problem_type == 'clf' else np.empty((n_seeds, n_samples))
+    iterator.random_state = 42
 
-    def process_fold(r, random_seed):
-        iterator.random_state = random_seed
-        for train_index, test_index in iterator.split(X, y):
+    for r, random_seed in enumerate(random_seeds_train):
+        iterator.random_state = 42
+        X_shuffled, y_shuffled, IDs_shuffled = shuffle(X, y, IDs,random_state=random_seed)
+        for train_index, test_index in iterator.split(X_shuffled, y_shuffled):
             model = Model(model_class(**params), scaler, imputer)
             if hasattr(model.model, 'random_state'):
                 model.model.random_state = 42
             
-            X_dev[r, test_index] = X.iloc[test_index]
-            y_dev[r, test_index] = y.iloc[test_index]
-            IDs_dev[r, test_index] = IDs[test_index]
+            X_dev[r, test_index] = X_shuffled.iloc[test_index]
+            y_dev[r, test_index] = y_shuffled.iloc[test_index].values.squeeze()
+            IDs_dev[r, test_index] = IDs_shuffled[test_index]
         
-            model.train(X.iloc[train_index], y.iloc[train_index])
+            model.train(X_shuffled.iloc[train_index], y_shuffled.iloc[train_index])
 
-            outputs_dev[r, test_index] = model.eval(X.iloc[test_index], problem_type)
-            
-    Parallel(n_jobs=-1 if parallel else 1)(delayed(process_fold)(r, random_seed) for r, random_seed in enumerate(random_seeds_train))
-    
+            outputs_dev[r, test_index] = model.eval(X_shuffled.iloc[test_index], problem_type)
+                
     if problem_type == 'clf':
         model_params['threshold'] = threshold
 
@@ -349,12 +356,12 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
 
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
 
-    def process_combination(c, feature_set, threshold,problem_type):
+    def process_combination(c, feature_set,threshold,problem_type):
         params = hyperp.loc[c, :].to_dict()
         return CV(model, params, scaler, imputer, X[feature_set], y, features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, cmatrix, priors, problem_type)
 
     if parallel:
-        results = Parallel(n_jobs=-1)(delayed(process_combination)(c, feature_set, threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
+        results = Parallel(n_jobs=-1)(delayed(process_combination)(c, feature_set,threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
     else:
         results = [process_combination(c, feature_set, threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds)]
 
