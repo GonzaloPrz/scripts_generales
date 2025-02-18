@@ -353,7 +353,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
     
     if hasattr(model(), 'random_state') and model != SVR:
         hyperp['random_state'] = 42
-
+    
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
 
     def process_combination(c, feature_set,threshold,problem_type):
