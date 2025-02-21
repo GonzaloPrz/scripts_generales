@@ -7,6 +7,7 @@ from sklearn.neighbors import KNeighborsClassifier as KNNC
 from sklearn.neighbors import KNeighborsRegressor as KNNR
 from sklearn.svm import SVR 
 from sklearn.utils import shuffle
+import timeout_decorator
 
 from sklearn import metrics
 
@@ -200,7 +201,7 @@ def generate_feature_sets(features, config, data_shape):
     feature_sets = [list(feature_set) for feature_set in feature_sets]
     return feature_sets
 
-def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iterator, random_seeds_train, IDs, cmatrix=None, priors=None, problem_type='clf',parallel=True):
+def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, threshold, iterator, random_seeds_train, IDs, cmatrix=None, priors=None, problem_type='clf',parallel=True):
     """
     Cross-validation function to train and evaluate a model with specified parameters, 
     feature engineering, and evaluation metrics. Supports both classification and regression.
@@ -259,13 +260,14 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
 
     model_params = params.copy()
     features = {feature: 0 for feature in all_features}
-    features.update({feature: 1 for feature in X.columns})
+    features.update({feature: 1 for feature in feature_set})
     model_params.update(features)
 
     model_params = pd.DataFrame(model_params, index=[0])
 
     n_seeds = len(random_seeds_train)
     n_samples, n_features = X.shape
+    
     n_classes = len(np.unique(y))
 
     X_dev = np.empty((n_seeds, n_samples, n_features))
@@ -275,25 +277,25 @@ def CV(model_class, params, scaler, imputer, X, y, all_features, threshold, iter
     iterator.random_state = 42
 
     for r, random_seed in enumerate(random_seeds_train):
-        iterator.random_state = 42
-        X_shuffled, y_shuffled, IDs_shuffled = shuffle(X, y, IDs,random_state=random_seed)
-        for train_index, test_index in iterator.split(X_shuffled, y_shuffled):
+        iterator.random_state = random_seed
+
+        for train_index, test_index in iterator.split(X, y):
             model = Model(model_class(**params), scaler, imputer)
             if hasattr(model.model, 'random_state'):
                 model.model.random_state = 42
             
-            X_dev[r, test_index] = X_shuffled.iloc[test_index]
-            y_dev[r, test_index] = y_shuffled.iloc[test_index].values.squeeze()
-            IDs_dev[r, test_index] = IDs_shuffled[test_index]
-        
-            model.train(X_shuffled.iloc[train_index], y_shuffled.iloc[train_index])
+            X_dev[r, test_index] = X.iloc[test_index]
+            y_dev[r, test_index] = y.iloc[test_index].values.squeeze()
+            IDs_dev[r, test_index] = IDs[test_index]
 
-            outputs_dev[r, test_index] = model.eval(X_shuffled.iloc[test_index], problem_type)
-                
+            model.train(X.iloc[train_index][feature_set], y.iloc[train_index])
+
+            outputs_dev[r, test_index] = model.eval(X.iloc[test_index][feature_set], problem_type)
+
     if problem_type == 'clf':
         model_params['threshold'] = threshold
 
-    return model_params, outputs_dev, y_dev, IDs_dev
+    return model_params, outputs_dev, X_dev, y_dev, IDs_dev
 
 def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feature_sets, IDs, thresholds=[None], cmatrix=None, priors=None, parallel=True, problem_type='clf'):
     """
@@ -358,19 +360,20 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
 
     def process_combination(c, feature_set,threshold,problem_type):
         params = hyperp.loc[c, :].to_dict()
-        return CV(model, params, scaler, imputer, X[feature_set], y, features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, cmatrix, priors, problem_type)
+        return CV(model, params, scaler, imputer, X, y, feature_set,features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, cmatrix, priors, problem_type)
 
     if parallel:
-        results = Parallel(n_jobs=-1)(delayed(process_combination)(c, feature_set,threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
+        results = Parallel(n_jobs=-1,timeout=300)(delayed(process_combination)(c, feature_set,threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
     else:
         results = [process_combination(c, feature_set, threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds)]
 
     all_models = pd.concat([result[0] for result in results], ignore_index=True, axis=0)
     all_outputs = np.concatenate([np.expand_dims(result[1], axis=0) for result in results], axis=0)
-    y_true = results[0][2]
-    IDs_dev = results[0][3]
+    X_dev = results[0][2]
+    y_true = results[0][3]
+    IDs_dev = results[0][4]
 
-    return all_models, all_outputs, y_true, IDs_dev
+    return all_models, all_outputs, X_dev, y_true, IDs_dev
 
 def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_type='clf'):
     
