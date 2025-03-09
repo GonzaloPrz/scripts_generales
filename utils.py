@@ -253,11 +253,7 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
 
     if cmatrix is None:
         cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y)))
-
-    if 'priors' in params.keys():
-        if np.isnan(params['priors']):
-            params['priors'] = None
-
+    
     model_params = params.copy()
     features = {feature: 0 for feature in all_features}
     features.update({feature: 1 for feature in feature_set})
@@ -418,6 +414,37 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_t
     outputs = model.eval(X_test, problem_type)
 
     return outputs
+
+def compute_metrics(j, model_index, r,outputs, y_dev, metrics_names, n_boot, problem_type, cmatrix=None, priors=None, threshold=None,bayesian=False):
+    # Calculate the metrics using the bootstrap method
+
+    results = get_metrics_bootstrap(outputs[j,model_index,r], y_dev[j, r], metrics_names, n_boot=n_boot, cmatrix=cmatrix,priors=priors,threshold=threshold,problem_type=problem_type,bayesian=bayesian)
+
+    metrics_result = {}
+    for metric in metrics_names:
+        metrics_result[metric] = results[metric]
+    return j,model_index,r, metrics_result
+
+def get_metrics_bootstrap(samples, targets, metrics_names, n_boot=2000,cmatrix=None,priors=None,threshold=None,problem_type='clf',bayesian=False):
+    all_metrics = dict((metric,np.empty(n_boot)) for metric in metrics_names)
+ 
+    for metric in metrics_names:
+        if bayesian:
+            weights = np.random.dirichlet(np.ones(samples.shape[0]))
+        else:
+            weights = None
+
+        for b in range(n_boot):
+            indices = np.random.choice(targets.shape[0], targets.shape[0], replace=True)
+            while len(np.unique(targets[indices])) == 1:
+                indices = np.random.choice(targets.shape[0], targets.shape[0], replace=True)
+            if problem_type == 'clf':
+                metric_value, y_pred = get_metrics_clf(samples[indices], targets[indices], [metric], cmatrix,priors,threshold,weights)
+            else:
+                metric_value = get_metrics_reg(samples[indices], targets[indices], [metric])
+            all_metrics[metric][b] = metric_value[metric]
+        
+    return all_metrics
 
 def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True):
     
