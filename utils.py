@@ -415,17 +415,21 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_t
 
     return outputs
 
-def compute_metrics(j, model_index, r,outputs, y_dev, metrics_names, n_boot, problem_type, cmatrix=None, priors=None, threshold=None,bayesian=False):
+def compute_metrics(j, model_index, r,outputs, y_dev, IDs,metrics_names, n_boot, problem_type, cmatrix=None, priors=None, threshold=None,bayesian=False):
     # Calculate the metrics using the bootstrap method
-
-    results = get_metrics_bootstrap(outputs[j,model_index,r], y_dev[j, r], metrics_names, n_boot=n_boot, cmatrix=cmatrix,priors=priors,threshold=threshold,problem_type=problem_type,bayesian=bayesian)
+    if outputs.ndim == 4 and problem_type == 'clf':
+        outputs = outputs[:,np.newaxis,:,:,:]
+    elif outputs.ndim == 3 and problem_type == 'reg':
+        outputs = outputs[:,np.newaxis,:,:]
+        
+    results, sorted_IDs = get_metrics_bootstrap(outputs[j,model_index,r], y_dev[j, r], IDs[j, r],metrics_names, n_boot=n_boot, cmatrix=cmatrix,priors=priors,threshold=threshold,problem_type=problem_type,bayesian=bayesian)
 
     metrics_result = {}
     for metric in metrics_names:
         metrics_result[metric] = results[metric]
-    return j,model_index,r, metrics_result
+    return j,model_index,r,metrics_result,sorted_IDs
 
-def get_metrics_bootstrap(samples, targets, metrics_names, n_boot=2000,cmatrix=None,priors=None,threshold=None,problem_type='clf',bayesian=False):
+def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmatrix=None,priors=None,threshold=None,problem_type='clf',bayesian=False):
     all_metrics = dict((metric,np.empty(n_boot)) for metric in metrics_names)
  
     for metric in metrics_names:
@@ -433,18 +437,28 @@ def get_metrics_bootstrap(samples, targets, metrics_names, n_boot=2000,cmatrix=N
             weights = np.random.dirichlet(np.ones(samples.shape[0]))
         else:
             weights = None
-
+        #Sort IDs and keep indices to adjust samples and targets' order
+        indices_ = np.argsort(IDs)
+        samples = samples[indices_]
+        targets = targets[indices_]
+        sorted_IDs = [IDs[indices_]]
+        
         for b in range(n_boot):
-            indices = np.random.choice(targets.shape[0], targets.shape[0], replace=True)
+            np.random.seed(b)
+            indices = np.random.choice(indices_, len(indices_), replace=True)
+            sorted_IDs.append(sorted_IDs[0][indices])
+
             while len(np.unique(targets[indices])) == 1:
-                indices = np.random.choice(targets.shape[0], targets.shape[0], replace=True)
+                np.random.seed(b)
+                indices = np.random.choice(indices_, len(indices_), replace=True)
+            
             if problem_type == 'clf':
                 metric_value, y_pred = get_metrics_clf(samples[indices], targets[indices], [metric], cmatrix,priors,threshold,weights)
             else:
                 metric_value = get_metrics_reg(samples[indices], targets[indices], [metric])
             all_metrics[metric][b] = metric_value[metric]
         
-    return all_metrics
+    return all_metrics, sorted_IDs
 
 def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True):
     
