@@ -1,13 +1,8 @@
 import numpy as np
-from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, precision_score, recall_score, r2_score, mean_absolute_error, mean_squared_error,median_absolute_error
-from sklearn.feature_selection import RFECV
-import torch,itertools,json
+from sklearn.metrics import *
+import torch,itertools
 import pandas as pd
-from sklearn.neighbors import KNeighborsClassifier as KNNC 
-from sklearn.neighbors import KNeighborsRegressor as KNNR
 from sklearn.svm import SVR 
-from sklearn.utils import shuffle
-import timeout_decorator
 
 from sklearn import metrics
 
@@ -20,8 +15,6 @@ from joblib import Parallel, delayed
 import math
 
 from bayes_opt import BayesianOptimization
-
-from skopt import BayesSearchCV
 
 class Model():
     def __init__(self,model,scaler=None,imputer=None,calibrator=None):
@@ -201,7 +194,7 @@ def generate_feature_sets(features, config, data_shape):
     feature_sets = [list(feature_set) for feature_set in feature_sets]
     return feature_sets
 
-def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, threshold, iterator, random_seeds_train, IDs, cmatrix=None, priors=None, problem_type='clf',parallel=True):
+def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, threshold, iterator, random_seeds_train, IDs, problem_type='clf'):
     """
     Cross-validation function to train and evaluate a model with specified parameters, 
     feature engineering, and evaluation metrics. Supports both classification and regression.
@@ -251,9 +244,6 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
         Array of IDs for samples used in predictions across folds.
     """
 
-    if cmatrix is None:
-        cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y)))
-    
     model_params = params.copy()
     features = {feature: 0 for feature in all_features}
     features.update({feature: 1 for feature in feature_set})
@@ -293,7 +283,7 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
 
     return model_params, outputs_dev, X_dev, y_dev, IDs_dev
 
-def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feature_sets, IDs, thresholds=[None], cmatrix=None, priors=None, parallel=True, problem_type='clf'):
+def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feature_sets, IDs, thresholds=[None], parallel=True, problem_type='clf'):
     """
     Cross-validation testing function for model training and evaluation with hyperparameter 
     tuning, feature set selection, and parallel processing options. Supports classification 
@@ -356,7 +346,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
 
     def process_combination(c, feature_set,threshold,problem_type):
         params = hyperp.loc[c, :].to_dict()
-        return CV(model, params, scaler, imputer, X, y, feature_set,features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, cmatrix, priors, problem_type)
+        return CV(model, params, scaler, imputer, X, y, feature_set,features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, problem_type)
 
     if parallel:
         results = Parallel(n_jobs=-1,timeout=300)(delayed(process_combination)(c, feature_set,threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
@@ -460,7 +450,7 @@ def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmat
         
     return all_metrics, sorted_IDs
 
-def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True):
+def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc_score',problem_type='clf',priors=None,threshold=None,feature_selection=True,parallel=True):
     
     """
     Conducts nested cross-validation with recursive feature elimination (RFE) and hyperparameter tuning 
@@ -562,9 +552,9 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_test.columns,data=scaler_.transform(X_test))))
             print(f'Random seed {r+1}, Fold {k+1}')
 
-            best_features = rfe(Model(model_class(),scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix,priors,threshold) if feature_selection else X.columns
+            best_features = rfe(Model(model_class(),scaler,imputer),X_dev,y_dev,iterator_inner,scoring,problem_type,priors,threshold) if feature_selection else X.columns
             
-            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
+            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,priors=priors,threshold=threshold)
             
             if 'n_estimators' in best_params.keys():
                 best_params['n_estimators'] = int(best_params['n_estimators'])
@@ -592,7 +582,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 if threshold is not None:
                     y_pred_best_ = [1 if x > threshold else 0 for x in outputs_best_r[test_index_out][:,1]]
                 else:
-                    y_pred_best_= bayes_decisions(scores=outputs_best_r[test_index_out],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
+                    y_pred_best_= bayes_decisions(scores=outputs_best_r[test_index_out],priors=priors,score_type='log_posteriors')[0]
                 
                 y_pred_best_r[test_index_out] = y_pred_best_
 
