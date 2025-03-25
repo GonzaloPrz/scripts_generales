@@ -8,7 +8,10 @@ from sklearn import metrics
 
 from expected_cost.ec import *
 from expected_cost.utils import *
+from expected_cost.calibration import *
+
 from psrcal.losses import LogLoss
+from psrcal.calibration import *
 
 from joblib import Parallel, delayed
 
@@ -17,11 +20,12 @@ import math
 from bayes_opt import BayesianOptimization
 
 class Model():
-    def __init__(self,model,scaler=None,imputer=None,calibrator=None):
+    def __init__(self,model,scaler=None,imputer=None,calmethod=None,calparams=None):
         self.model = model
         self.scaler = scaler() if scaler is not None else None
         self.imputer = imputer() if imputer is not None else None
-        self.calibrator = calibrator() if calibrator is not None else None
+        self.calmethod = calmethod
+        self.calparams = calparams
 
     def train(self,X,y):   
         features = X.columns
@@ -67,7 +71,16 @@ class Model():
             score_filled[nan_indices_col1, 1] =  1e6
             
         return score_filled
+    
+    def calibrate(self,outputs_train,y_train,outputs_test,return_model=False):
+        if return_model:
+            cal_outputs_test, calmodel = calibration_train_on_heldout(outputs_test,outputs_train,y_train,self.calmethod,self.calparams,return_model=True)
+        else:
+            cal_outputs_test = calibration_train_on_heldout(outputs_test,outputs_train,y_train,self.calmethod,self.calparams,return_model=False)
+            calmodel = None
 
+        return cal_outputs_test, calmodel
+    
 def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,threshold=None,weights=None):
     """
     Calculates evaluation metrics for the predicted scores and true labels.
@@ -101,12 +114,12 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
 
     for m in metrics_names:
         if m == 'norm_cross_entropy':
-            metrics[m] = LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
+            metrics[m] = float(LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy()) if priors is not None else float(LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy())
         elif m == 'norm_expected_cost':
             metrics[m] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
         elif m == 'roc_auc' and len(np.unique(y_true)) == 2:
             metrics[m] = roc_auc_score(y_true=y_true,y_score=y_scores[:,1],sample_weight=weights)
-        elif len(np.unique(y_true)) == 2:
+        elif m == 'accuracy' or len(np.unique(y_true)) == 2:
             metrics[m] = eval(f'{m}_score')(y_true=np.array(y_true,dtype=int),y_pred=y_pred,sample_weight=weights)
 
     return metrics,y_pred
@@ -194,7 +207,7 @@ def generate_feature_sets(features, config, data_shape):
     feature_sets = [list(feature_set) for feature_set in feature_sets]
     return feature_sets
 
-def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, threshold, iterator, random_seeds_train, IDs, problem_type='clf'):
+def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, threshold, iterator, random_seeds_train, IDs, problem_type='clf',calmethod=None,calparams=None):
     """
     Cross-validation function to train and evaluate a model with specified parameters, 
     feature engineering, and evaluation metrics. Supports both classification and regression.
@@ -260,13 +273,15 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
     y_dev = np.empty((n_seeds, n_samples))
     IDs_dev = np.empty((n_seeds, n_samples), dtype=object)
     outputs_dev = np.empty((n_seeds, n_samples, n_classes)) if problem_type == 'clf' else np.empty((n_seeds, n_samples))
+    cal_outputs_dev = np.empty_like(outputs_dev)
+
     iterator.random_state = 42
 
     for r, random_seed in enumerate(random_seeds_train):
         iterator.random_state = random_seed
 
         for train_index, test_index in iterator.split(X, y):
-            model = Model(model_class(**params), scaler, imputer)
+            model = Model(model_class(**params), scaler, imputer,calmethod,calparams)
             if hasattr(model.model, 'random_state'):
                 model.model.random_state = 42
             
@@ -277,13 +292,17 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
             model.train(X.iloc[train_index][feature_set], y.iloc[train_index])
 
             outputs_dev[r, test_index] = model.eval(X.iloc[test_index][feature_set], problem_type)
+            if calmethod is not None:
+                cal_outputs_dev[r, test_index],_ = model.calibrate(model.eval(X.iloc[train_index][feature_set],problem_type),y.iloc[train_index].values,outputs_dev[r,test_index],return_model=False)
+            else:
+                cal_outputs_dev[r, test_index] = outputs_dev[r, test_index]
 
     if problem_type == 'clf':
         model_params['threshold'] = threshold
 
-    return model_params, outputs_dev, X_dev, y_dev, IDs_dev
+    return model_params, outputs_dev, cal_outputs_dev, X_dev, y_dev, IDs_dev
 
-def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feature_sets, IDs, thresholds=[None], parallel=True, problem_type='clf'):
+def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feature_sets, IDs, thresholds=[None], parallel=True, problem_type='clf',calmethod=None,calparams=None):
     """
     Cross-validation testing function for model training and evaluation with hyperparameter 
     tuning, feature set selection, and parallel processing options. Supports classification 
@@ -344,22 +363,23 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
     
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
 
-    def process_combination(c, feature_set,threshold,problem_type):
+    def process_combination(c, feature_set,threshold,problem_type,calmethod,calparams):
         params = hyperp.loc[c, :].to_dict()
-        return CV(model, params, scaler, imputer, X, y, feature_set,features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, problem_type)
+        return CV(model, params, scaler, imputer, X, y, feature_set,features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, problem_type,calmethod,calparams)
 
     if parallel:
-        results = Parallel(n_jobs=-1,timeout=300)(delayed(process_combination)(c, feature_set,threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
+        results = Parallel(n_jobs=-1,timeout=300)(delayed(process_combination)(c, feature_set,threshold,problem_type,calmethod,calparams) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
     else:
-        results = [process_combination(c, feature_set, threshold,problem_type) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds)]
+        results = [process_combination(c, feature_set, threshold,problem_type,calmethod,calparams) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds)]
 
     all_models = pd.concat([result[0] for result in results], ignore_index=True, axis=0)
     all_outputs = np.concatenate([np.expand_dims(result[1], axis=0) for result in results], axis=0)
-    X_dev = results[0][2]
-    y_true = results[0][3]
-    IDs_dev = results[0][4]
+    all_cal_outputs = np.concatenate([np.expand_dims(result[2], axis=0) for result in results], axis=0)
+    X_dev = results[0][3]
+    y_true = results[0][4]
+    IDs_dev = results[0][5]
 
-    return all_models, all_outputs, X_dev, y_true, IDs_dev
+    return all_models, all_outputs, all_cal_outputs, X_dev, y_true, IDs_dev
 
 def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_type='clf'):
     
@@ -405,7 +425,7 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_t
 
     return outputs
 
-def compute_metrics(j, model_index, r,outputs, y_dev, IDs,metrics_names, n_boot, problem_type, cmatrix=None, priors=None, threshold=None,bayesian=False):
+def compute_metrics(j, model_index, r, outputs, y_dev, IDs, metrics_names, n_boot, problem_type, cmatrix=None, priors=None, threshold=None, bayesian=False):
     # Calculate the metrics using the bootstrap method
     if outputs.ndim == 4 and problem_type == 'clf':
         outputs = outputs[:,np.newaxis,:,:,:]
@@ -420,7 +440,7 @@ def compute_metrics(j, model_index, r,outputs, y_dev, IDs,metrics_names, n_boot,
     return j,model_index,r,metrics_result,sorted_IDs
 
 def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmatrix=None,priors=None,threshold=None,problem_type='clf',bayesian=False):
-    all_metrics = dict((metric,np.empty(n_boot)) for metric in metrics_names)
+    all_metrics = dict((metric,np.zeros(n_boot)) for metric in metrics_names)
  
     for metric in metrics_names:
         if bayesian:
@@ -446,6 +466,9 @@ def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmat
                 metric_value, y_pred = get_metrics_clf(samples[indices], targets[indices], [metric], cmatrix,priors,threshold,weights)
             else:
                 metric_value = get_metrics_reg(samples[indices], targets[indices], [metric])
+            if not isinstance(metric_value[metric],float):
+                continue
+
             all_metrics[metric][b] = metric_value[metric]
         
     return all_metrics, sorted_IDs
