@@ -55,7 +55,7 @@ class Model():
         X_t = pd.DataFrame(columns=features,data=self.imputer.transform(X_t.values)) if self.imputer is not None else X_t
         if problem_type == 'clf':
             prob = self.model.predict_proba(X_t)
-            prob = np.clip(prob,1e-6,1-1e-6)
+            prob = np.clip(prob,1e-3,1-1e-3)
             score = np.log(prob)
         else:
             score = self.model.predict(X_t)
@@ -67,17 +67,18 @@ class Model():
             nan_indices_col1 = np.isnan(score[:, 1])  # True where second column is NaN
 
             # Replace them accordingly:
-            score_filled[nan_indices_col0, 0] = -1e6
-            score_filled[nan_indices_col1, 1] =  1e6
+            score_filled[nan_indices_col0, 0] = -np.log(1e-3)
+            score_filled[nan_indices_col1, 1] =  np.log(1-1e-3)
             
         return score_filled
     
-    def calibrate(self,outputs_train,y_train,outputs_test,return_model=False):
-        if return_model:
-            cal_outputs_test, calmodel = calibration_train_on_heldout(outputs_test,outputs_train,y_train,self.calmethod,self.calparams,return_model=True)
-        else:
-            cal_outputs_test = calibration_train_on_heldout(outputs_test,outputs_train,y_train,self.calmethod,self.calparams,return_model=False)
+    def calibrate(self,logpost_tst,targets_tst,logpost_trn=None,targets_trn=None):
+        
+        if logpost_trn is None:
+            cal_outputs_test = calibration_with_crossval(logpost=logpost_tst,targets=targets_tst,calmethod=self.calmethod,calparams=self.calparams)        
             calmodel = None
+        else:
+            cal_outputs_test, calmodel = calibration_train_on_heldout(logpost_trn=logpost_trn,targets_trn=targets_trn,logpost_tst=logpost_tst,calmethod=self.calmethod,calparams=self.calparams,return_model=True)        
 
         return cal_outputs_test, calmodel
     
@@ -106,22 +107,26 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
 
     if cmatrix is None:
         cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y_true)))
-    metrics = dict([(metric,[]) for metric in metrics_names])
 
     y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(y_scores[:,1] > threshold,dtype=int)
 
     y_scores = np.clip(y_scores,-1e6,1e6)
+
+    if not (np.array_equal(np.unique(y_pred), np.unique(y_true)) & (len(np.unique(y_pred)) == 2)):
+        metrics_names = list(set(metrics_names) - set(['roc_auc','accuracy','f1','recall','precision']))
+
+    metrics = dict([(metric,[]) for metric in metrics_names])
 
     for m in metrics_names:
         if m == 'norm_cross_entropy':
             metrics[m] = float(LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy()) if priors is not None else float(LogLoss(log_probs=torch.tensor(y_scores),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy())
         elif m == 'norm_expected_cost':
             metrics[m] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
-        elif m == 'roc_auc' and len(np.unique(y_true)) == 2:
+        elif m == 'roc_auc':
             metrics[m] = roc_auc_score(y_true=y_true,y_score=y_scores[:,1],sample_weight=weights)
-        elif m == 'accuracy' or len(np.unique(y_true)) == 2:
+        else:
             metrics[m] = eval(f'{m}_score')(y_true=np.array(y_true,dtype=int),y_pred=y_pred,sample_weight=weights)
-
+        
     return metrics,y_pred
 
 def get_metrics_reg(y_scores,y_true,metrics_names):
@@ -293,7 +298,7 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
 
             outputs_dev[r, test_index] = model.eval(X.iloc[test_index][feature_set], problem_type)
             if calmethod is not None:
-                cal_outputs_dev[r, test_index],_ = model.calibrate(model.eval(X.iloc[train_index][feature_set],problem_type),y.iloc[train_index].values,outputs_dev[r,test_index],return_model=False)
+                cal_outputs_dev[r, test_index],_ = model.calibrate(outputs_dev[r,test_index],y_dev[r,test_index])
             else:
                 cal_outputs_dev[r, test_index] = outputs_dev[r, test_index]
 
@@ -461,15 +466,17 @@ def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmat
             while len(np.unique(targets[indices])) == 1:
                 np.random.seed(b)
                 indices = np.random.choice(indices_, len(indices_), replace=True)
-            
-            if problem_type == 'clf':
-                metric_value, y_pred = get_metrics_clf(samples[indices], targets[indices], [metric], cmatrix,priors,threshold,weights)
-            else:
-                metric_value = get_metrics_reg(samples[indices], targets[indices], [metric])
-            if not isinstance(metric_value[metric],float):
-                continue
+            try:
+                if problem_type == 'clf':
+                    metric_value, y_pred = get_metrics_clf(samples[indices], targets[indices], [metric], cmatrix,priors,threshold,weights)
+                else:
+                    metric_value = get_metrics_reg(samples[indices], targets[indices], [metric])
+                if not isinstance(metric_value[metric],float):
+                    continue
 
-            all_metrics[metric][b] = metric_value[metric]
+                all_metrics[metric][b] = metric_value[metric]
+            except:
+                pass
         
     return all_metrics, sorted_IDs
 
