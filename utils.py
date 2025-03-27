@@ -42,7 +42,9 @@ class Model():
             params['max_depth'] = int(params['max_depth']) if params['max_depth'] is not None else None
         if 'max_iter' in params.keys():
             params['max_iter'] = int(params['max_iter']) if params['max_iter'] is not None else None
-            
+        if 'gpu_id' in params.keys():
+                params['gpu_id'] = None
+                
         self.model.set_params(**params)
         if hasattr(self.model,'precompute'):
             self.model.precompute = True
@@ -55,7 +57,7 @@ class Model():
         X_t = pd.DataFrame(columns=features,data=self.imputer.transform(X_t.values)) if self.imputer is not None else X_t
         if problem_type == 'clf':
             prob = self.model.predict_proba(X_t)
-            prob = np.clip(prob,1e-3,1-1e-3)
+            prob = np.clip(prob,1e-2,1-1e-2)
             score = np.log(prob)
         else:
             score = self.model.predict(X_t)
@@ -67,8 +69,8 @@ class Model():
             nan_indices_col1 = np.isnan(score[:, 1])  # True where second column is NaN
 
             # Replace them accordingly:
-            score_filled[nan_indices_col0, 0] = -np.log(1e-3)
-            score_filled[nan_indices_col1, 1] =  np.log(1-1e-3)
+            score_filled[nan_indices_col0, 0] = np.log(1e-2)
+            score_filled[nan_indices_col1, 1] =  np.log(1-1e-2)
             
         return score_filled
     
@@ -109,8 +111,6 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
         cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y_true)))
 
     y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(y_scores[:,1] > threshold,dtype=int)
-
-    y_scores = np.clip(y_scores,-1e6,1e6)
 
     if not (np.array_equal(np.unique(y_pred), np.unique(y_true)) & (len(np.unique(y_pred)) == 2)):
         metrics_names = list(set(metrics_names) - set(['roc_auc','accuracy','f1','recall','precision']))
@@ -156,7 +156,7 @@ def conf_int_95(data):
     sup = np.nanpercentile(data,97.5) 
     return mean, inf, sup
 
-def initialize_hyperparameters(model_key,config,n_samples,default_hp,hp_range):
+def initialize_hyperparameters(model_key,config,default_hp,hp_range):
     """
     Initialize hyperparameter DataFrame for a given model.
     In a production system this might be replaced by loading a pre-tuned configuration.
@@ -168,7 +168,7 @@ def initialize_hyperparameters(model_key,config,n_samples,default_hp,hp_range):
 
     while hp.shape[0] < config['n_iter']+1 and n < 1000:        
         # If no default hyperparameters are available, generate random hyperparameters
-
+        np.random.seed(n)
         new_hp = {key: np.random.choice(hp_range[model_key][key]) for key in hp_range[model_key].keys()}
         
         hp = pd.concat([hp, pd.DataFrame(new_hp,index=[0])], ignore_index=True)
@@ -196,12 +196,14 @@ def generate_feature_sets(features, config, data_shape):
         for _ in range(int(config["n_iter_features"])):
             # Use np.random.choice without replacement
             n_iter = 0
+            np.random.seed(n_iter)
             new_set = list(np.random.choice(features, np.min((len(features),n_possible)), replace=True))
             #Eliminate duplicates
             new_set = list(set(new_set))
             while sorted(new_set) in feature_sets and n_iter < 100:
-                new_set = list(set(np.random.choice(features, np.min((len(features),n_possible)), replace=True)))
                 n_iter += 1
+                np.random.seed(n_iter)
+                new_set = list(set(np.random.choice(features, np.min((len(features),n_possible)), replace=True)))
             feature_sets.append(sorted(new_set))    
             
     # Always include the full feature set.
@@ -362,29 +364,43 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
     """
     
     features = X.columns
-    
+    if not isinstance(thresholds,list):
+        thresholds = [thresholds]
+
     if hasattr(model(), 'random_state') and model != SVR:
         hyperp['random_state'] = 42
     
-    all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features))
+    all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features),index=range(hyperp.shape[0]*len(feature_sets)*len(thresholds)))
+    all_outputs = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], len(np.unique(y))))
+    all_cal_outputs = np.empty_like(all_outputs)
+    X_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], X.shape[1]))
+    y_true = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0]))
+    IDs_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0]), dtype=object)
 
-    def process_combination(c, feature_set,threshold,problem_type,calmethod,calparams):
+    def process_combination(c,f,t,problem_type,calmethod,calparams):
         params = hyperp.loc[c, :].to_dict()
-        return CV(model, params, scaler, imputer, X, y, feature_set,features, threshold, iterator, [int(seed) for seed in random_seeds_train], IDs, problem_type,calmethod,calparams)
-
+        return c, f, t, CV(model, params, scaler, imputer, X, y, feature_sets[f],features, thresholds[t], iterator, [int(seed) for seed in random_seeds_train], IDs, problem_type,calmethod,calparams)
+        
     if parallel:
-        results = Parallel(n_jobs=-1,timeout=300)(delayed(process_combination)(c, feature_set,threshold,problem_type,calmethod,calparams) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds))
+        results = Parallel(n_jobs=-1,timeout=300)(delayed(process_combination)(c, f,threshold,problem_type,calmethod,calparams) for c, f, threshold in itertools.product(range(hyperp.shape[0]), range(len(feature_sets)), range(len(thresholds))))
+        for c,f,t, result in results:
+            all_models.loc[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[0].iloc[0]
+            all_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[1]
+            all_cal_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[2]
+            X_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[3]
+            y_true[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[4]
+            IDs_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[5]
     else:
-        results = [process_combination(c, feature_set, threshold,problem_type,calmethod,calparams) for c, feature_set, threshold in itertools.product(hyperp.index, feature_sets, thresholds)]
-
-    all_models = pd.concat([result[0] for result in results], ignore_index=True, axis=0)
-    all_outputs = np.concatenate([np.expand_dims(result[1], axis=0) for result in results], axis=0)
-    all_cal_outputs = np.concatenate([np.expand_dims(result[2], axis=0) for result in results], axis=0)
-    X_dev = results[0][3]
-    y_true = results[0][4]
-    IDs_dev = results[0][5]
-
-    return all_models, all_outputs, all_cal_outputs, X_dev, y_true, IDs_dev
+        for c,f,t in itertools.product(range(hyperp.shape[0]), range(len(feature_sets)), range(len(thresholds))):
+            _,_,_, result = process_combination(c, f, t,problem_type,calmethod,calparams)
+            all_models.loc[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[0].iloc[0]
+            all_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[1]
+            all_cal_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[2]
+            X_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[3]
+            y_true[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[4]
+            IDs_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[5]
+    
+    return all_models, all_outputs, all_cal_outputs, X_dev[0], y_true[0], IDs_dev[0]
 
 def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_type='clf'):
     
@@ -437,7 +453,7 @@ def compute_metrics(j, model_index, r, outputs, y_dev, IDs, metrics_names, n_boo
     elif outputs.ndim == 3 and problem_type == 'reg':
         outputs = outputs[:,np.newaxis,:,:]
         
-    results, sorted_IDs = get_metrics_bootstrap(outputs[j,model_index,r], y_dev[j, r], IDs[j, r],metrics_names, n_boot=n_boot, cmatrix=cmatrix,priors=priors,threshold=threshold,problem_type=problem_type,bayesian=bayesian)
+    results, sorted_IDs = get_metrics_bootstrap(outputs[j,model_index,r], y_dev[j,r], IDs[j,r],metrics_names, n_boot=n_boot, cmatrix=cmatrix,priors=priors,threshold=threshold,problem_type=problem_type,bayesian=bayesian)
 
     metrics_result = {}
     for metric in metrics_names:
@@ -592,6 +608,8 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 best_params['n_neighbors'] = int(best_params['n_neighbors'])
             elif 'max_depth' in best_params.keys():
                 best_params['max_depth'] = int(best_params['max_depth'])
+            if 'gpu_id' in best_params.keys():
+                best_params['gpu_id'] = None
             
             if hasattr(model_class(),'random_state') and model_class != SVR:
                 best_params['random_state'] = int(42)
