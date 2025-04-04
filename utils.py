@@ -113,7 +113,7 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
     y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(y_scores[:,1] > threshold,dtype=int)
 
     if not (np.array_equal(np.unique(y_pred), np.unique(y_true)) & (len(np.unique(y_pred)) == 2)):
-        metrics_names = list(set(metrics_names) - set(['roc_auc','accuracy','f1','recall','precision']))
+        metrics_names = list(set(metrics_names) - set(['accuracy']))
 
     metrics = dict([(metric,[]) for metric in metrics_names])
 
@@ -452,7 +452,9 @@ def compute_metrics(j, model_index, r, outputs, y_dev, IDs, metrics_names, n_boo
         outputs = outputs[:,np.newaxis,:,:,:]
     elif outputs.ndim == 3 and problem_type == 'reg':
         outputs = outputs[:,np.newaxis,:,:]
-        
+    if outputs.shape[-1] > 2:
+        metrics_names = list(set(metrics_names) - set(['roc_auc','f1','recall','precision']))
+      
     results, sorted_IDs = get_metrics_bootstrap(outputs[j,model_index,r], y_dev[j,r], IDs[j,r],metrics_names, n_boot=n_boot, cmatrix=cmatrix,priors=priors,threshold=threshold,problem_type=problem_type,bayesian=bayesian)
 
     metrics_result = {}
@@ -461,8 +463,9 @@ def compute_metrics(j, model_index, r, outputs, y_dev, IDs, metrics_names, n_boo
     return j,model_index,r,metrics_result,sorted_IDs
 
 def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmatrix=None,priors=None,threshold=None,problem_type='clf',bayesian=False):
+    
     all_metrics = dict((metric,np.zeros(n_boot)) for metric in metrics_names)
- 
+   
     for metric in metrics_names:
         if bayesian:
             weights = np.random.dirichlet(np.ones(samples.shape[0]))
@@ -482,17 +485,15 @@ def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmat
             while len(np.unique(targets[indices])) == 1:
                 np.random.seed(b)
                 indices = np.random.choice(indices_, len(indices_), replace=True)
-            try:
-                if problem_type == 'clf':
-                    metric_value, y_pred = get_metrics_clf(samples[indices], targets[indices], [metric], cmatrix,priors,threshold,weights)
-                else:
-                    metric_value = get_metrics_reg(samples[indices], targets[indices], [metric])
-                if not isinstance(metric_value[metric],float):
-                    continue
+            if problem_type == 'clf':
+                metric_value, y_pred = get_metrics_clf(samples[indices], targets[indices], [metric], cmatrix,priors,threshold,weights)
+            else:
+                metric_value = get_metrics_reg(samples[indices], targets[indices], [metric])
+            if (len(metric_value) == 0) or (not isinstance(metric_value[metric],float)):
+                
+                continue
 
-                all_metrics[metric][b] = metric_value[metric]
-            except:
-                pass
+            all_metrics[metric][b] = metric_value[metric]
         
     return all_metrics, sorted_IDs
 
