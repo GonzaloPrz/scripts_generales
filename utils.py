@@ -631,7 +631,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             
             if problem_type == 'clf':
                 outputs_best_ = model.eval(X_test[best_features],problem_type)
-                if (threshold is not None) & (len(np.unique(y)) == 2):
+                if isinstance(threshold,float) & (len(np.unique(y)) == 2):
                     y_pred_best_ = [1 if x > threshold else 0 for x in outputs_best_r[test_index_out][:,1]]
                 else:
                     y_pred_best_= bayes_decisions(scores=outputs_best_r[test_index_out],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
@@ -712,7 +712,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
                 
                 if problem_type == 'clf':
                     outputs[val_index] = model.eval(X_val,problem_type)
-                    if (threshold is not None) & (len(np.unique(y)) == 2):
+                    if isinstance(threshold,float) & (len(np.unique(y)) == 2):
                         y_pred[val_index] = [1 if x > threshold else 0 for x in outputs[:,1]]
                     else:
                         y_pred[val_index] = bayes_decisions(scores=outputs[val_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
@@ -835,7 +835,7 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
         outputs[test_index] = model.eval(X.loc[test_index],problem_type)
 
         if problem_type == 'clf':
-            if (threshold is not None) & (len(np.unique(y)) == 2):
+            if isinstance(threshold,float) & (len(np.unique(y)) == 2):
                 y_pred[test_index] = [1 if x > threshold else 0 for x in outputs[test_index,1]]
             else:
                 y_pred[test_index] = bayes_decisions(scores=outputs[test_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
