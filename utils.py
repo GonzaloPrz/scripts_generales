@@ -371,7 +371,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
         hyperp['random_state'] = 42
     
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features),index=range(hyperp.shape[0]*len(feature_sets)*len(thresholds)))
-    all_outputs = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], len(np.unique(y)) if problem_type == 'clf' else 1)).squeeze(-1)
+    all_outputs = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], len(np.unique(y)))) if problem_type == 'clf' else np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0]))
     all_cal_outputs = np.empty_like(all_outputs)
     X_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], X.shape[1]))
     y_true = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0]))
