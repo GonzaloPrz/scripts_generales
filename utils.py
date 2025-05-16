@@ -371,7 +371,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
         hyperp['random_state'] = 42
     
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features),index=range(hyperp.shape[0]*len(feature_sets)*len(thresholds)))
-    all_outputs = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], len(np.unique(y))))
+    all_outputs = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], len(np.unique(y)) if problem_type == 'clf' else 1)).squeeze(-1)
     all_cal_outputs = np.empty_like(all_outputs)
     X_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], X.shape[1]))
     y_true = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0]))
@@ -384,21 +384,21 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
     if parallel:
         results = Parallel(n_jobs=-1,timeout=300)(delayed(process_combination)(c, f,threshold,problem_type,calmethod,calparams) for c, f, threshold in itertools.product(range(hyperp.shape[0]), range(len(feature_sets)), range(len(thresholds))))
         for c,f,t, result in results:
-            all_models.loc[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[0].iloc[0]
-            all_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[1]
-            all_cal_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[2]
-            X_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[3]
-            y_true[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[4]
-            IDs_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[5]
+            all_models.loc[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[0].iloc[0]
+            all_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t,] = result[1]
+            all_cal_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[2]
+            X_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[3]
+            y_true[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[4]
+            IDs_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[5]
     else:
         for c,f,t in itertools.product(range(hyperp.shape[0]), range(len(feature_sets)), range(len(thresholds))):
             _,_,_, result = process_combination(c, f, t,problem_type,calmethod,calparams)
-            all_models.loc[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[0].iloc[0]
-            all_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[1]
-            all_cal_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[2]
-            X_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :, :] = result[3]
-            y_true[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[4]
-            IDs_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t, :] = result[5]
+            all_models.loc[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[0].iloc[0]
+            all_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[1]
+            all_cal_outputs[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[2]
+            X_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[3]
+            y_true[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[4]
+            IDs_dev[c*len(feature_sets)*len(thresholds)+f*len(thresholds)+t] = result[5]
     
     return all_models, all_outputs, all_cal_outputs, X_dev[0], y_true[0], IDs_dev[0]
 
