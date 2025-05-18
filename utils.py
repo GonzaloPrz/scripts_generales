@@ -602,10 +602,16 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_test.columns,data=scaler_.transform(X_test))))
             print(f'Random seed {r+1}, Fold {k+1}')
             
-            best_features = rfe(Model(model_class(probability=True) if model_class == SVC else model_class(),scaler,imputer,calmethod,calparams),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold) if feature_selection else X.columns
-            
-            best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams)
-            
+            if feature_selection:
+                best_features, best_score = rfe(Model(model_class(probability=True) if model_class == SVC else model_class(),scaler,imputer,calmethod,calparams),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
+            else:
+                best_features, best_score = X.columns, np.nan
+
+            if n_iter > 0:
+                best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams)
+            else:
+                best_params = model_class(random_state=42).get_params() 
+
             if 'n_estimators' in best_params.keys():
                 best_params['n_estimators'] = int(best_params['n_estimators'])
             elif 'n_neighbors' in best_params.keys():
@@ -748,7 +754,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
             # Stop if no improvement
             break
 
-    return best_features
+    return best_features, best_score
 
 def new_best(old,new,greater=True):
     if greater:
