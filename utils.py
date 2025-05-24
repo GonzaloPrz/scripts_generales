@@ -595,11 +595,13 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             #ID_dev, ID_test = IDs[train_index_out], IDs[test_index_out]
             IDs_val_r[test_index_out] = IDs[test_index_out]
 
-            scaler_ = scaler().fit(X_dev)
-            imputer_ = imputer().fit(X_dev)
+            #scaler_ = scaler().fit(X_dev)
+            #imputer_ = imputer().fit(X_dev)
 
-            X_dev = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_dev.columns,data=scaler_.transform(X_dev))))
-            X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_test.columns,data=scaler_.transform(X_test))))
+            #X_dev = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_dev.columns,data=scaler_.transform(X_dev))))
+            X_dev = pd.DataFrame(columns=X.columns,data=X_dev)
+            X_test = pd.DataFrame(columns=X.columns,data=X_test)
+            #X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_test.columns,data=scaler_.transform(X_test))))
             print(f'Random seed {r+1}, Fold {k+1}')
             
             if feature_selection:
@@ -610,15 +612,15 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             if n_iter > 0:
                 best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams)
             else:
-                best_params = model_class(random_state=42).get_params() 
+                best_params = model_class().get_params() 
 
-            if 'n_estimators' in best_params.keys():
+            if 'n_estimators' in best_params.keys() and not isinstance(best_params['n_estimators'],type(None)):
                 best_params['n_estimators'] = int(best_params['n_estimators'])
-            elif 'n_neighbors' in best_params.keys():
+            elif 'n_neighbors' in best_params.keys() and not isinstance(best_params['n_neighbors'],type(None)):
                 best_params['n_neighbors'] = int(best_params['n_neighbors'])
-            elif 'max_depth' in best_params.keys():
+            elif 'max_depth' in best_params.keys() and not isinstance(best_params['max_depth'],type(None)):
                 best_params['max_depth'] = int(best_params['max_depth'])
-            if 'gpu_id' in best_params.keys():
+            if 'gpu_id' in best_params.keys() and not isinstance(best_params['gpu_id'],type(None)):
                 best_params['gpu_id'] = None
             
             if hasattr(model_class(),'random_state') and model_class != SVR:
@@ -651,7 +653,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
         return models_r,outputs_best_r,y_true_r,y_pred_best_r,IDs_val_r
     
-    results = Parallel(n_jobs=-1 if parallel else 1)(delayed(parallel_train)(r,random_seed_train) for r,random_seed_train in enumerate(random_seeds_outer))
+    results = Parallel(n_jobs=-1 if parallel else 1)(delayed(parallel_train)(r,random_seed_train) for (r,random_seed_train) in enumerate(random_seeds_outer))
     all_models = pd.concat([result[0] for result in results],ignore_index=True,axis=0)
     outputs_best = np.concatenate(([np.expand_dims(result[1],axis=0) for result in results]),axis=0)
     y_true = np.concatenate(([np.expand_dims(result[2],axis=0) for result in results]),axis=0)
@@ -698,7 +700,38 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
     
     # Ascending if error, loss, or other metrics where lower is better
     ascending = any(x in scoring for x in ['error', 'loss', 'cost'])
-    best_score = np.inf if ascending else -np.inf
+
+    outputs = np.empty((X.shape[0], len(np.unique(y)))) if problem_type == 'clf' else np.empty(X.shape[0])
+    y_pred = np.empty(X.shape[0])
+    y_true = np.empty(X.shape[0])
+
+    for train_index, val_index in iterator.split(X, y):
+        X_train = X.iloc[train_index]
+        X_val = X.iloc[val_index]
+        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+        
+        model.train(X_train, y_train)
+        
+        if problem_type == 'clf':
+            outputs[val_index] = model.eval(X_val,problem_type)
+            if isinstance(threshold,float) & (len(np.unique(y)) == 2):
+                y_pred[val_index] = [1 if x > threshold else 0 for x in outputs[:,1]]
+            else:
+                y_pred[val_index] = bayes_decisions(scores=outputs[val_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
+        else:
+            outputs[val_index] = model.eval(X_val,problem_type)
+            y_pred[val_index] = outputs[val_index]
+        y_true[val_index] = y_val
+    
+    if scoring == 'roc_auc_score':
+        best_score = eval(scoring)(y_true, outputs[:, 1])
+    elif scoring == 'norm_expected_cost':
+        best_score = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
+    elif scoring == 'norm_cross_entropy':
+        best_score = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
+    else:
+        best_score = eval(scoring)(y_true, y_pred)
+
     best_features = features.copy()
 
     while len(features) > 1:
@@ -748,7 +781,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
             best_score = best_feature_score
             features.remove(feature_to_remove)
             best_features = features.copy()
-            print(f'Removing feature: {feature}. New best score: {best_score}')
+            print(f'Removing feature: {feature_to_remove}. New best score: {best_score}')
         else:
             print('No improvement found. Stopping RFE.')
             # Stop if no improvement
