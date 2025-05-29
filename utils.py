@@ -19,6 +19,8 @@ import math
 
 from bayes_opt import BayesianOptimization
 
+from scipy.stats import bootstrap
+
 class Model():
     def __init__(self,model,scaler=None,imputer=None,calmethod=None,calparams=None):
         self.model = model
@@ -454,13 +456,66 @@ def compute_metrics(j, model_index, r, outputs, y_dev, IDs, metrics_names, n_boo
         outputs = outputs[:,np.newaxis,:,:]
     if outputs.shape[-1] > 2:
         metrics_names = list(set(metrics_names) - set(['roc_auc','f1','recall','precision']))
-      
-    results, sorted_IDs = get_metrics_bootstrap(outputs[j,model_index,r], y_dev[j,r], IDs[j,r],metrics_names, n_boot=n_boot, cmatrix=cmatrix,priors=priors,threshold=threshold,problem_type=problem_type,bayesian=bayesian)
+    
+    if cmatrix is None:
+        cmatrix = CostMatrix.zero_one_costs(K=outputs.shape[-1])
+
+    n_samples = len(y_dev[j,r])
+
+    data = (np.arange(n_samples),)
+
+    ci_metrics = dict((metric,[]) for metric in metrics_names)
+
+    def metric_func(metric, indices):
+        yt = y_dev[j,r,indices].squeeze()
+        if problem_type == 'clf':
+            if threshold is not None and np.unique(y_dev).shape[0] == 2:
+                yp = (outputs[j,model_index,r,indices,1].squeeze() > threshold).astype(int)
+            else:
+                yp = bayes_decisions(scores=outputs[j,model_index,r,indices].squeeze(), costs=cmatrix, priors=priors, score_type='log_posteriors')[0]
+        else:
+            yp = outputs[j,model_index,r,indices].squeeze()
+        ys = outputs[j,model_index,r,indices].squeeze()
+
+        try:
+            if metric == 'roc_auc':
+                return roc_auc_score(yt,ys[:,1])
+            elif metric == 'norm_cross_entropy':
+                return LogLoss(log_probs=torch.tensor(ys), labels=torch.tensor(np.array(yt, dtype=int)), priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(ys), labels=torch.tensor(np.array(yt, dtype=int))).detach().numpy()
+            elif metric == 'norm_expected_cost':
+                return average_cost(targets=np.array(yt, dtype=int), decisions=np.array(yp, dtype=int), costs=cmatrix, priors=priors, adjusted=True)
+            elif 'error' in metric:
+                return eval(metric)(yt, yp)
+            else:
+                return eval(f'{metric}_score')(yt, yp)
+        except ValueError as e:
+            print(f"Error calculating {metric} for indices {indices}: {e}")
+            return np.nan    
+
+    for metric in metrics_names:
+        #Calculate bootstrap BCa confidence intervals
+        res = bootstrap(
+            data, 
+            lambda idx: metric_func(metric, idx),
+            vectorized=False,
+            n_resamples=n_boot,
+            confidence_level=.95,
+            method='bca',
+            random_state=42
+        )
+
+        estimate = np.round(metric_func(metric,data),3)
+        ci = res.confidence_interval
+        ci_metrics[metric] = (estimate, (np.round(ci.low,3), np.round(ci.high,3)))
+
+    '''
+    #results, sorted_IDs = get_metrics_bootstrap(outputs[j,model_index,r], y_dev[j,r], IDs[j,r],metrics_names, n_boot=n_boot, cmatrix=cmatrix,priors=priors,threshold=threshold,problem_type=problem_type,bayesian=bayesian)
 
     metrics_result = {}
     for metric in metrics_names:
         metrics_result[metric] = results[metric]
-    return j,model_index,r,metrics_result,sorted_IDs
+    '''
+    return j,model_index,r,ci_metrics
 
 def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmatrix=None,priors=None,threshold=None,problem_type='clf',bayesian=False):
     
@@ -604,13 +659,8 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             #X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_test.columns,data=scaler_.transform(X_test))))
             print(f'Random seed {r+1}, Fold {k+1}')
             
-            if feature_selection:
-                best_features, best_score = rfe(Model(model_class(probability=True) if model_class == SVC else model_class(),scaler,imputer,calmethod,calparams),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
-            else:
-                best_features, best_score = X.columns, np.nan
-
             if n_iter > 0:
-                best_params, best_score = tuning(model_class,scaler,imputer,X_dev[best_features],y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams)
+                best_params, best_score = tuning(model_class,scaler,imputer,X_dev,y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams)
             else:
                 best_params = model_class().get_params() 
 
@@ -627,6 +677,11 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 best_params['random_state'] = int(42)
             if hasattr(model_class(),'probability') and model_class != SVR:
                 best_params['probability'] = True
+
+            if feature_selection:
+                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
+            else:
+                best_features, best_score = X.columns, np.nan
 
             append_dict = {'random_seed':random_seed,'fold':k,'threshold':threshold,scoring:best_score}
             append_dict.update(best_params)
@@ -662,7 +717,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
     return all_models,outputs_best,y_true,y_pred_best,IDs_val
 
-def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatrix=None,priors=None,threshold=None):
+def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=None,priors=None,threshold=None):
     
     """
     Performs recursive feature elimination (RFE) to select the best subset of features based on a 
@@ -723,14 +778,14 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
             y_pred[val_index] = outputs[val_index]
         y_true[val_index] = y_val
     
-    if scoring == 'roc_auc_score':
-        best_score = eval(scoring)(y_true, outputs[:, 1])
+    if scoring == 'roc_auc':
+        best_score = roc_auc_score(y_true, outputs[:, 1])
     elif scoring == 'norm_expected_cost':
         best_score = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
     elif scoring == 'norm_cross_entropy':
         best_score = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
     else:
-        best_score = eval(scoring)(y_true, y_pred)
+        best_score = eval(f"{scoring}_score")(y_true, y_pred)
 
     best_features = features.copy()
 
@@ -760,14 +815,14 @@ def rfe(model, X, y, iterator, scoring='roc_auc_score', problem_type='clf',cmatr
                     y_pred[val_index] = outputs[val_index]
                 y_true[val_index] = y_val
             
-            if scoring == 'roc_auc_score':
-                scorings[feature] = eval(scoring)(y_true, outputs[:, 1])
+            if scoring == 'roc_auc':
+                scorings[feature] = roc_auc_score(y_true, outputs[:, 1])
             elif scoring == 'norm_expected_cost':
                 scorings[feature] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
             elif scoring == 'norm_cross_entropy':
                 scorings[feature] = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
             else:
-                scorings[feature] = eval(scoring)(y_true, y_pred)
+                scorings[feature] = eval(f"{scoring}_score")(y_true, y_pred)
 
         # Sort features by score to find the best to remove
         scorings = pd.DataFrame(list(scorings.items()), columns=['feature', 'score']).sort_values(
@@ -795,7 +850,7 @@ def new_best(old,new,greater=True):
     else:
         return new < old
 
-def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42,calmethod=None,calparams=None):
+def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42,calmethod=None,calparams=None):
     
     def objective(**params):
         return scoring_bo(params, model, scaler, imputer, X, y, iterator, scoring, problem_type, 
@@ -882,18 +937,16 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
             y_pred[test_index] = outputs[test_index]
         y_true[test_index] = y[test_index]
     
-    scoring_func = getattr(metrics, scoring, None)
-
     if 'error' in scoring:
-        return -scoring_func(y_true, outputs)
+        return -eval(scoring)(y_true, outputs)
     elif scoring == 'norm_expected_cost':
         return -average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
     elif scoring == 'norm_cross_entropy':
         return -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
-    elif scoring == 'roc_auc_score':
-        return scoring_func(y_true, outputs[:,1])
+    elif scoring == 'roc_auc':
+        return roc_auc_score(y_true, outputs[:,1])
     else:
-        return scoring_func(y_true, y_pred)
+        return eval(f"{scoring}_score")(y_true, y_pred)
 
 def compare(models,X_dev,y_dev,iterator,random_seeds_train,metric_name,IDs_dev,n_boot=100,cmatrix=None,priors=None,problem_type='clf'):
     metrics = np.empty((np.max((1,n_boot)),len(models)))
