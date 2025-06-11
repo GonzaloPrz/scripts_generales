@@ -3,6 +3,7 @@ from sklearn.metrics import *
 import torch,itertools
 import pandas as pd
 from sklearn.svm import SVR, SVC
+from pathlib import Path
 
 from sklearn import metrics
 
@@ -15,7 +16,7 @@ from psrcal.calibration import *
 
 from joblib import Parallel, delayed
 
-import math
+import math, pickle
 
 from bayes_opt import BayesianOptimization
 
@@ -85,7 +86,65 @@ class Model():
             cal_outputs_test, calmodel = calibration_train_on_heldout(logpost_trn=logpost_trn,targets_trn=targets_trn,logpost_tst=logpost_tst,calmethod=self.calmethod,calparams=self.calparams,return_model=True)        
 
         return cal_outputs_test, calmodel
+
+def _build_path(base_dir, task, dimension, y_label, random_seed_test, file_name, config, bayes=False, scoring=None):
+    """Constructs a standardized file path from configuration options."""
+    hyp_opt_str = "hyp_opt" if config["n_iter"] else ""
+    feature_sel_str = "feature_selection" if bool(config['feature_selection']) else ""
+    outlier_str = "filter_outliers" if config['filter_outliers'] and config["problem_type"] == 'reg' else ''
     
+    return Path(base_dir, task, dimension, config['scaler_name'], config['kfold_folder'], 
+           y_label, config["stat_folder"], 'bayes' if bayes else '', scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, random_seed_test, file_name)
+
+def _load_data(results_dir, task, dimension, y_label, model_type, random_seed_test, config,bayes=False,scoring=None):
+    """Loads model outputs and true labels for a given configuration."""
+    path_kwargs = {'base_dir': results_dir, 'task': task, 'dimension': dimension, 'y_label': y_label, 'random_seed_test': random_seed_test}
+    
+    outputs_path = _build_path(**path_kwargs,file_name=f'outputs_{model_type}_calibrated.pkl' if config["calibrate"] else f'outputs_{model_type}.pkl',config=config,bayes=bayes,scoring=scoring)
+    y_dev_path = _build_path(**path_kwargs, file_name='y_dev.pkl',config=config,bayes=bayes,scoring=scoring)
+
+    with open(outputs_path, "rb") as f:
+        # Load and select the specific model's outputs
+        outputs = pickle.load(f)
+    
+    with open(y_dev_path, "rb") as f:
+        y_dev = pickle.load(f)
+        
+    return outputs, y_dev
+
+def _calculate_metrics(indices, outputs, y_dev, metrics_names, prob_type, cost_matrix):
+    """
+    Statistic function for bootstrap. Calculates differences for ALL metrics at once.
+    """
+    # Resample y, ensuring we don't operate on an empty or invalid slice
+    while y_dev.ndim < 3:
+        y_dev = y_dev[np.newaxis,:]
+    
+    resampled_y = y_dev[:, :, indices].ravel()
+
+    # If a resample is degenerate (e.g., missing a class), metric calculation is impossible.
+    # Return NaNs to signal this. The 'bca' method will fail, triggering our fallback.
+    while np.unique(resampled_y).shape[0] != np.unique(y_dev).shape[0]:
+        np.random.seed(np.random.randint(0,1e6))
+        indices = np.random.choice(np.arange(len(indices)),len(indices),replace=True)
+        resampled_y = y_dev[:, :, indices].ravel()
+
+    # Resample model outputs
+
+    while outputs.ndim < 4:
+        outputs = outputs[np.newaxis,:]
+
+    resampled_out = outputs[:, :, indices, :].reshape(-1, outputs.shape[-1])
+
+    # Get metrics for both classifiers
+    if prob_type == 'clf':
+        metrics, _ = get_metrics_clf(resampled_out, resampled_y, metrics_names, cmatrix=cost_matrix)
+    else: # 'reg'
+        metrics = get_metrics_reg(resampled_out, resampled_y, metrics_names)
+
+    # Return an array of differences
+    return np.array([metrics[m] for m in metrics_names])
+
 def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,threshold=None,weights=None):
     """
     Calculates evaluation metrics for the predicted scores and true labels.
@@ -113,9 +172,6 @@ def get_metrics_clf(y_scores,y_true,metrics_names,cmatrix=None,priors=None,thres
         cmatrix = CostMatrix.zero_one_costs(K=y_scores.shape[-1])
 
     y_pred = bayes_decisions(scores=y_scores,costs=cmatrix,priors=priors,score_type='log_posteriors')[0] if threshold is None else np.array(y_scores[:,1] > threshold,dtype=int)
-
-    if not (np.array_equal(np.unique(y_pred), np.unique(y_true)) & (len(np.unique(y_pred)) == 2)):
-        metrics_names = list(set(metrics_names) - set(['accuracy']))
 
     metrics = dict([(metric,[]) for metric in metrics_names])
 
@@ -448,7 +504,7 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_t
 
     return outputs
 
-def compute_metrics(j, model_index, r, outputs, y_dev, IDs, metrics_names, n_boot, problem_type, cmatrix=None, priors=None, threshold=None, bayesian=False):
+def compute_metrics(model_index, outputs, y_dev, metrics_names, n_boot, problem_type, cmatrix=None, priors=None, threshold=None):
     # Calculate the metrics using the bootstrap method
     if outputs.ndim == 4 and problem_type == 'clf':
         outputs = outputs[:,np.newaxis,:,:,:]
@@ -460,38 +516,43 @@ def compute_metrics(j, model_index, r, outputs, y_dev, IDs, metrics_names, n_boo
     if cmatrix is None:
         cmatrix = CostMatrix.zero_one_costs(K=outputs.shape[-1])
 
-    n_samples = len(y_dev[j,r])
+    n_samples = y_dev.shape[0]
 
     data = (np.arange(n_samples),)
 
     ci_metrics = dict((metric,[]) for metric in metrics_names)
 
     def metric_func(metric, indices):
-        yt = y_dev[j,r,indices].squeeze()
-        if problem_type == 'clf':
-            if threshold is not None and np.unique(y_dev).shape[0] == 2:
-                yp = (outputs[j,model_index,r,indices,1].squeeze() > threshold).astype(int)
-            else:
-                yp = bayes_decisions(scores=outputs[j,model_index,r,indices].squeeze(), costs=cmatrix, priors=priors, score_type='log_posteriors')[0]
-        else:
-            yp = outputs[j,model_index,r,indices].squeeze()
-        ys = outputs[j,model_index,r,indices].squeeze()
+        metric_result = []
 
-        try:
-            if metric == 'roc_auc':
-                return roc_auc_score(yt,ys[:,1])
-            elif metric == 'norm_cross_entropy':
-                return LogLoss(log_probs=torch.tensor(ys), labels=torch.tensor(np.array(yt, dtype=int)), priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(ys), labels=torch.tensor(np.array(yt, dtype=int))).detach().numpy()
-            elif metric == 'norm_expected_cost':
-                return average_cost(targets=np.array(yt, dtype=int), decisions=np.array(yp, dtype=int), costs=cmatrix, priors=priors, adjusted=True)
-            elif 'error' in metric:
-                return eval(metric)(yt, yp)
+        for j,r in itertools.product(range(y_dev.shape[0]),range(y_dev.shape[1])):
+            yt = y_dev[j,r,indices].squeeze()
+            if problem_type == 'clf':
+                if threshold is not None and np.unique(y_dev).shape[0] == 2:
+                    yp = (outputs[j,model_index,r,indices,1].squeeze() > threshold).astype(int)
+                else:
+                    yp = bayes_decisions(scores=outputs[j,model_index,r,indices].squeeze(), costs=cmatrix, priors=priors, score_type='log_posteriors')[0]
             else:
-                return eval(f'{metric}_score')(yt, yp)
-        except ValueError as e:
-            print(f"Error calculating {metric} for indices {indices}: {e}")
-            return np.nan    
+                yp = outputs[j,model_index,r,indices].squeeze()
+            ys = outputs[j,model_index,r,indices].squeeze()
 
+            try:
+                if metric == 'roc_auc':
+                    metric_result += [roc_auc_score(yt,ys[:,1])]
+                elif metric == 'norm_cross_entropy':
+                    metric_result += [LogLoss(log_probs=torch.tensor(ys), labels=torch.tensor(np.array(yt, dtype=int)), priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(ys), labels=torch.tensor(np.array(yt, dtype=int))).detach().numpy()]
+                elif metric == 'norm_expected_cost':
+                    metric_result += [average_cost(targets=np.array(yt, dtype=int), decisions=np.array(yp, dtype=int), costs=cmatrix, priors=priors, adjusted=True)]
+                elif 'error' in metric:
+                    metric_result += [eval(metric)(yt, yp)]
+                else:
+                    metric_result += [eval(f'{metric}_score')(yt, yp)]
+            except ValueError as e:
+                print(f"Error calculating {metric} for indices {indices}: {e}")
+                metric_result += [np.nan]    
+
+        return metric_result
+      
     for metric in metrics_names:
         #Calculate bootstrap BCa confidence intervals
         res = bootstrap(
@@ -515,7 +576,7 @@ def compute_metrics(j, model_index, r, outputs, y_dev, IDs, metrics_names, n_boo
     for metric in metrics_names:
         metrics_result[metric] = results[metric]
     '''
-    return j,model_index,r,ci_metrics
+    return ci_metrics
 
 def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmatrix=None,priors=None,threshold=None,problem_type='clf',bayesian=False):
     
