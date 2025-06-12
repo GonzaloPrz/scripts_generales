@@ -112,22 +112,22 @@ def _load_data(results_dir, task, dimension, y_label, model_type, random_seed_te
         
     return outputs, y_dev
 
-def _calculate_metrics(indices, outputs, y_dev, metrics_names, prob_type, cost_matrix):
+def _calculate_metrics(indices, outputs, y, metrics_names, prob_type, cost_matrix):
     """
     Statistic function for bootstrap. Calculates differences for ALL metrics at once.
     """
     # Resample y, ensuring we don't operate on an empty or invalid slice
-    while y_dev.ndim < 3:
-        y_dev = y_dev[np.newaxis,:]
+    while y.ndim < 3:
+        y = y[np.newaxis,:]
     
-    resampled_y = y_dev[:, :, indices].ravel()
+    resampled_y = y[:, :, indices].ravel()
 
     # If a resample is degenerate (e.g., missing a class), metric calculation is impossible.
     # Return NaNs to signal this. The 'bca' method will fail, triggering our fallback.
-    while np.unique(resampled_y).shape[0] != np.unique(y_dev).shape[0]:
+    while np.unique(resampled_y).shape[0] != np.unique(y).shape[0]:
         np.random.seed(np.random.randint(0,1e6))
         indices = np.random.choice(np.arange(len(indices)),len(indices),replace=True)
-        resampled_y = y_dev[:, :, indices].ravel()
+        resampled_y = y[:, :, indices].ravel()
 
     # Resample model outputs
 
