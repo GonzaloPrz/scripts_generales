@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.preprocessing import LabelEncoder
 
 def estimate_propensity_scores(df, treatment_col, covariate_cols):
@@ -129,7 +130,7 @@ def estimate_three_way_propensity_scores(df, treatment_col, covariate_cols):
     np.ndarray
         An N x 3 array of predicted probabilities, one column per treatment level.
     """
-    model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
+    model = HistGradientBoostingClassifier(learning_rate=1e-3,max_iter=1000)
     model.fit(df[covariate_cols], df[treatment_col])
     # predict_proba returns an N x 3 array of probabilities (for 3 classes)
     propensity_scores = model.predict_proba(df[covariate_cols])

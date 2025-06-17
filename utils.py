@@ -845,6 +845,8 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
         best_score = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
     elif scoring == 'norm_cross_entropy':
         best_score = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
+    elif 'error' in scoring:
+        best_score = eval(scoring)(y_true,y_pred)
     else:
         best_score = eval(f"{scoring}_score")(y_true, y_pred)
 
@@ -882,6 +884,8 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
                 scorings[feature] = average_cost(targets=np.array(y_true,dtype=int),decisions=np.array(y_pred,dtype=int),costs=cmatrix,priors=priors,adjusted=True)
             elif scoring == 'norm_cross_entropy':
                 scorings[feature] = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
+            elif 'error' in scoring:
+                scorings[feature] = eval(scoring)(y_true,y_pred)
             else:
                 scorings[feature] = eval(f"{scoring}_score")(y_true, y_pred)
 
