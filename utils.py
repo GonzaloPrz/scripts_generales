@@ -87,18 +87,18 @@ class Model():
 
         return cal_outputs_test, calmodel
 
-def _build_path(base_dir, task, dimension, y_label, random_seed_test, file_name, config, bayes=False, scoring=None):
+def _build_path(base_dir, data_file, task, dimension, y_label, random_seed_test, file_name, config, bayes=False, scoring=None):
     """Constructs a standardized file path from configuration options."""
     hyp_opt_str = "hyp_opt" if config["n_iter"] else ""
     feature_sel_str = "feature_selection" if bool(config['feature_selection']) else ""
     outlier_str = "filter_outliers" if config['filter_outliers'] and config["problem_type"] == 'reg' else ''
     
-    return Path(base_dir, task, dimension, config['scaler_name'], config['kfold_folder'], 
+    return Path(base_dir, data_file,task, dimension, config['scaler_name'], config['kfold_folder'], 
            y_label, config["stat_folder"], 'bayes' if bayes else '', scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, random_seed_test, file_name)
 
-def _load_data(results_dir, task, dimension, y_label, model_type, random_seed_test, config,bayes=False,scoring=None):
+def _load_data(results_dir, data_file, task, dimension, y_label, model_type, random_seed_test, config,bayes=False,scoring=None):
     """Loads model outputs and true labels for a given configuration."""
-    path_kwargs = {'base_dir': results_dir, 'task': task, 'dimension': dimension, 'y_label': y_label, 'random_seed_test': random_seed_test}
+    path_kwargs = {'base_dir': results_dir, 'data_file': data_file,'task': task, 'dimension': dimension, 'y_label': y_label, 'random_seed_test': random_seed_test}
     
     outputs_path = _build_path(**path_kwargs,file_name=f'outputs_{model_type}_calibrated.pkl' if config["calibrate"] else f'outputs_{model_type}.pkl',config=config,bayes=bayes,scoring=scoring)
     y_dev_path = _build_path(**path_kwargs, file_name='y_dev.pkl',config=config,bayes=bayes,scoring=scoring)
@@ -989,6 +989,9 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     y_pred = np.empty(X.shape[0])
     outputs = np.empty((X.shape[0],len(np.unique(y)))) if problem_type == 'clf' else np.empty(X.shape[0])
     
+    if isinstance(y,pd.Series):
+        y = y.values
+
     for train_index, test_index in iterator.split(X,y):
         model = Model(model_class(**params),scaler,imputer,calmethod,calparams)
         model.train(X.loc[train_index],y[train_index])
