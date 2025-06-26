@@ -93,12 +93,12 @@ def _build_path(base_dir, task, dimension, y_label, random_seed_test, file_name,
     feature_sel_str = "feature_selection" if bool(config['feature_selection']) else ""
     outlier_str = "filter_outliers" if config['filter_outliers'] and config["problem_type"] == 'reg' else ''
     
-    return Path(base_dir, task, dimension, config['scaler_name'], config['kfold_folder'], 
+    return Path(base_dir,task, dimension, config['scaler_name'], config['kfold_folder'], 
            y_label, config["stat_folder"], 'bayes' if bayes else '', scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, random_seed_test, file_name)
 
 def _load_data(results_dir, task, dimension, y_label, model_type, random_seed_test, config,bayes=False,scoring=None):
     """Loads model outputs and true labels for a given configuration."""
-    path_kwargs = {'base_dir': results_dir, 'task': task, 'dimension': dimension, 'y_label': y_label, 'random_seed_test': random_seed_test}
+    path_kwargs = {'base_dir': results_dir,'task': task, 'dimension': dimension, 'y_label': y_label, 'random_seed_test': random_seed_test}
     
     outputs_path = _build_path(**path_kwargs,file_name=f'outputs_{model_type}_calibrated.pkl' if config["calibrate"] else f'outputs_{model_type}.pkl',config=config,bayes=bayes,scoring=scoring)
     y_dev_path = _build_path(**path_kwargs, file_name='y_dev.pkl',config=config,bayes=bayes,scoring=scoring)
@@ -124,17 +124,18 @@ def _calculate_metrics(indices, outputs, y, metrics_names, prob_type, cost_matri
 
     # If a resample is degenerate (e.g., missing a class), metric calculation is impossible.
     # Return NaNs to signal this. The 'bca' method will fail, triggering our fallback.
-    while np.unique(resampled_y).shape[0] != np.unique(y).shape[0]:
-        np.random.seed(np.random.randint(0,1e6))
-        indices = np.random.choice(np.arange(len(indices)),len(indices),replace=True)
-        resampled_y = y[:, :, indices].ravel()
+    if prob_type == 'clf':
+        while np.unique(resampled_y).shape[0] != np.unique(y).shape[0]:
+            np.random.seed(np.random.randint(0,1e6))
+            indices = np.random.choice(np.arange(len(indices)),len(indices),replace=True)
+            resampled_y = y[:, :, indices].ravel()
 
     # Resample model outputs
 
-    while outputs.ndim < 4:
+    while ((prob_type == 'clf') & (outputs.ndim < 4)) | ((prob_type == 'reg') & (outputs.ndim < 3)):
         outputs = outputs[np.newaxis,:]
 
-    resampled_out = outputs[:, :, indices, :].reshape(-1, outputs.shape[-1])
+    resampled_out = outputs[:, :, indices].reshape(-1, outputs.shape[-1]) if prob_type == 'clf' else outputs[:,:,indices].ravel()
 
     # Get metrics for both classifiers
     if prob_type == 'clf':
@@ -613,7 +614,7 @@ def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmat
         
     return all_metrics, sorted_IDs
 
-def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc_score',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True,calparams=None,calmethod=None):
+def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,strat_col,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True,calparams=None,calmethod=None):
     
     """
     Conducts nested cross-validation with recursive feature elimination (RFE) and hyperparameter tuning 
@@ -698,7 +699,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
         iterator_outer.random_state = random_seed
         model = Model(model_class,scaler,imputer,calmethod,calparams)
-        for k,(train_index_out,test_index_out) in enumerate(iterator_outer.split(X,y)): 
+        for k,(train_index_out,test_index_out) in enumerate(iterator_outer.split(X,strat_col)): 
             X_dev, X_test = X.loc[train_index_out], X.loc[test_index_out]
             y_dev, y_test = y[train_index_out], y[test_index_out]
             
@@ -740,7 +741,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 best_params['probability'] = True
 
             if feature_selection:
-                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
+                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev.values if isinstance(y_dev,pd.Series) else y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
             else:
                 best_features, best_score = X.columns, np.nan
 
@@ -824,7 +825,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
     for train_index, val_index in iterator.split(X, y):
         X_train = X.iloc[train_index]
         X_val = X.iloc[val_index]
-        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+        y_train, y_val = y[train_index], y[val_index]
         
         model.train(X_train, y_train)
         
@@ -846,7 +847,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
     elif scoring == 'norm_cross_entropy':
         best_score = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
     elif 'error' in scoring:
-        best_score = eval(scoring)(y_true,y_pred)
+        best_score = eval(scoring)(y_true, y_pred)
     else:
         best_score = eval(f"{scoring}_score")(y_true, y_pred)
 
@@ -863,7 +864,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
             for train_index, val_index in iterator.split(X, y):
                 X_train = X.iloc[train_index][[f for f in features if f != feature]]
                 X_val = X.iloc[val_index][[f for f in features if f != feature]]
-                y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+                y_train, y_val = y[train_index], y[val_index]
                 
                 model.train(X_train, y_train)
                 
@@ -885,7 +886,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
             elif scoring == 'norm_cross_entropy':
                 scorings[feature] = LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int),priors=torch.tensor(priors)).detach().numpy() if priors is not None else -LogLoss(log_probs=torch.tensor(outputs),labels=torch.tensor(np.array(y_true),dtype=torch.int)).detach().numpy()
             elif 'error' in scoring:
-                scorings[feature] = eval(scoring)(y_true,y_pred)
+                scorings[feature] = eval(scoring)(y_true, y_pred)
             else:
                 scorings[feature] = eval(f"{scoring}_score")(y_true, y_pred)
 
@@ -988,6 +989,9 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     y_pred = np.empty(X.shape[0])
     outputs = np.empty((X.shape[0],len(np.unique(y)))) if problem_type == 'clf' else np.empty(X.shape[0])
     
+    if isinstance(y,pd.Series):
+        y = y.values
+
     for train_index, test_index in iterator.split(X,y):
         model = Model(model_class(**params),scaler,imputer,calmethod,calparams)
         model.train(X.loc[train_index],y[train_index])
