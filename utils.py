@@ -741,7 +741,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 best_params['probability'] = True
 
             if feature_selection:
-                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
+                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev.values if isinstance(y_dev,pd.Series) else y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
             else:
                 best_features, best_score = X.columns, np.nan
 
@@ -825,7 +825,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
     for train_index, val_index in iterator.split(X, y):
         X_train = X.iloc[train_index]
         X_val = X.iloc[val_index]
-        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+        y_train, y_val = y[train_index], y[val_index]
         
         model.train(X_train, y_train)
         
@@ -864,7 +864,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
             for train_index, val_index in iterator.split(X, y):
                 X_train = X.iloc[train_index][[f for f in features if f != feature]]
                 X_val = X.iloc[val_index][[f for f in features if f != feature]]
-                y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+                y_train, y_val = y[train_index], y[val_index]
                 
                 model.train(X_train, y_train)
                 
