@@ -704,9 +704,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             y_dev, y_test = y[train_index_out], y[test_index_out]
             
             X_dev = X_dev.reset_index(drop=True)
-            y_dev = y_dev.reset_index(drop=True)
             X_test = X_test.reset_index(drop=True)
-            y_test = y_test.reset_index(drop=True)
 
             y_true_r[test_index_out] = y_test
             #ID_dev, ID_test = IDs[train_index_out], IDs[test_index_out]
