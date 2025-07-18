@@ -92,11 +92,12 @@ def _build_path(base_dir, task, dimension, y_label, random_seed_test, file_name,
     hyp_opt_str = "hyp_opt" if config["n_iter"] else ""
     feature_sel_str = "feature_selection" if bool(config['feature_selection']) else ""
     outlier_str = "filter_outliers" if config['filter_outliers'] and config["problem_type"] == 'reg' else ''
-    
-    return Path(base_dir,task, dimension, config['scaler_name'], config['kfold_folder'], 
-           y_label, config["stat_folder"], 'bayes' if bayes else '', scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, random_seed_test, file_name)
+    shuffle_str = "shuffle" if config["shuffle_labels"] else ""
 
-def _load_data(results_dir, task, dimension, y_label, model_type, random_seed_test, config,bayes=False,scoring=None):
+    return Path(base_dir,task, dimension, config['scaler_name'], config['kfold_folder'], 
+           y_label, config["stat_folder"], 'bayes' if bayes else '', scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, shuffle_str,random_seed_test, file_name)
+
+def _load_data(results_dir, task, dimension, y_label, model_type, random_seed_test, config, bayes=False,scoring=None):
     """Loads model outputs and true labels for a given configuration."""
     path_kwargs = {'base_dir': results_dir,'task': task, 'dimension': dimension, 'y_label': y_label, 'random_seed_test': random_seed_test}
     
