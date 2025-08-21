@@ -615,7 +615,7 @@ def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmat
         
     return all_metrics, sorted_IDs
 
-def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,strat_col,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True,calparams=None,calmethod=None):
+def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,strat_col,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True,calparams=None,calmethod=None,round_values=False):
     
     """
     Conducts nested cross-validation with recursive feature elimination (RFE) and hyperparameter tuning 
@@ -721,7 +721,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             print(f'Random seed {r+1}, Fold {k+1}')
             
             if n_iter > 0:
-                best_params, best_score = tuning(model_class,scaler,imputer,X_dev,y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams)
+                best_params, best_score = tuning(model_class,scaler,imputer,X_dev,y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams,round_values=round_values)
             else:
                 best_params = model_class().get_params() 
 
@@ -740,7 +740,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 best_params['probability'] = True
 
             if feature_selection:
-                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev.values if isinstance(y_dev,pd.Series) else y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold)
+                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev.values if isinstance(y_dev,pd.Series) else y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,round_values=round_values)
             else:
                 best_features, best_score = X.columns, np.nan
 
@@ -760,11 +760,11 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 else:
                     y_pred_best_= bayes_decisions(scores=outputs_best_r[test_index_out],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
                 
-                y_pred_best_r[test_index_out] = y_pred_best_
+                y_pred_best_r[test_index_out] = np.round(y_pred_best_,decimals=0) if round_values else y_pred_best_
 
             else:
                 outputs_best_ = model.eval(X_test[best_features],problem_type)
-                y_pred_best_r[test_index_out] = outputs_best_
+                y_pred_best_r[test_index_out] = np.round(outputs_best_,decimals=0) if round_values else outputs_best_
             outputs_best_r[test_index_out] = outputs_best_
 
         return models_r,outputs_best_r,y_true_r,y_pred_best_r,IDs_val_r
@@ -778,7 +778,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
     return all_models,outputs_best,y_true,y_pred_best,IDs_val
 
-def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=None,priors=None,threshold=None):
+def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=None,priors=None,threshold=None,round_values=False):
     
     """
     Performs recursive feature elimination (RFE) to select the best subset of features based on a 
@@ -836,7 +836,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
                 y_pred[val_index] = bayes_decisions(scores=outputs[val_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
         else:
             outputs[val_index] = model.eval(X_val,problem_type)
-            y_pred[val_index] = outputs[val_index]
+            y_pred[val_index] = np.round(outputs[val_index],decimals=0) if round_values else outputs[val_index]
         y_true[val_index] = y_val
     
     if scoring == 'roc_auc':
@@ -875,7 +875,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
                         y_pred[val_index] = bayes_decisions(scores=outputs[val_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
                 else:
                     outputs[val_index] = model.eval(X_val,problem_type)
-                    y_pred[val_index] = outputs[val_index]
+                    y_pred[val_index] = np.round(outputs[val_index],decimals=0) if round_values else outputs[val_index]
                 y_true[val_index] = y_val
             
             if scoring == 'roc_auc':
@@ -915,11 +915,11 @@ def new_best(old,new,greater=True):
     else:
         return new < old
 
-def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42,calmethod=None,calparams=None):
+def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42,calmethod=None,calparams=None,round_values=False):
     
     def objective(**params):
         return scoring_bo(params, model, scaler, imputer, X, y, iterator, scoring, problem_type, 
-                          cmatrix, priors, threshold,calmethod,calparams)
+                          cmatrix, priors, threshold,calmethod,calparams,round_values)
     
     search = BayesianOptimization(f=objective,pbounds=hyperp_space,verbose=2,random_state=random_state)
     #search = BayesSearchCV(model(),hyperp_space,scoring=lambda params,X,y: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),n_iter=50,cv=None,random_state=42,verbose=2)
@@ -933,7 +933,7 @@ def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=5
             best_params[param] = int(best_params[param])
     return best_params, search.max['target']
 
-def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None,calmethod=None,calparams=None):
+def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None,calmethod=None,calparams=None,round_values=False):
 
     """
     Evaluates a model's performance using cross-validation and a specified scoring metric, 
@@ -1002,7 +1002,7 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
             else:
                 y_pred[test_index] = bayes_decisions(scores=outputs[test_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
         else:
-            y_pred[test_index] = outputs[test_index]
+            y_pred[test_index] = np.round(outputs[test_index],decimals=0) if round_values else outputs[test_index]
         y_true[test_index] = y[test_index]
     
     if 'error' in scoring:

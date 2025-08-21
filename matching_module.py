@@ -6,10 +6,12 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import HistGradientBoostingClassifier
 
 def estimate_propensity_scores(df, treatment_col, covariate_cols):
-    model = LogisticRegression()
+    model = HistGradientBoostingClassifier(loss='log_loss',learning_rate=.001,max_iter=1000)
+
     model.fit(df[covariate_cols], df[treatment_col])
-    propensity_scores = model.predict_proba(df[covariate_cols])[:, 1]
-    return propensity_scores
+    # predict_proba returns an N x 3 array of probabilities (for 3 classes)
+    propensity_scores = model.predict_proba(df[covariate_cols])
+    return propensity_scores[:,1]
 
 def perform_matching(df, treatment_col, covariate_cols, factor_vars, 
                      treatment_value=1, caliper=0.05):
