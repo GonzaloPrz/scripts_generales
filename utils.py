@@ -4,7 +4,7 @@ import torch,itertools
 import pandas as pd
 from sklearn.svm import SVR, SVC
 from pathlib import Path
-
+from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn import metrics
 
 from expected_cost.ec import *
@@ -689,16 +689,18 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
     def parallel_train(r,random_seed):
         models_r = pd.DataFrame(columns=['random_seed','fold','threshold',scoring] + list(hyperp_space.keys()) + list(features))
-
-        outputs_best_r = np.empty((X.shape[0],len(np.unique(y)))) if problem_type == 'clf' else np.empty((X.shape[0]))
-
-        y_true_r = np.empty(X.shape[0])
-
-        y_pred_best_r = np.empty((X.shape[0]))
-
-        IDs_val_r = np.empty(X.shape[0],dtype=object)
-
         iterator_outer.random_state = random_seed
+
+        n_samples = X.shape[0] 
+
+        outputs_best_r = np.full((n_samples,len(np.unique(y))),np.nan) if problem_type == 'clf' else np.full((n_samples),np.nan)
+
+        y_true_r = np.full(n_samples,np.nan)
+
+        y_pred_best_r = np.full(n_samples,np.nan)
+
+        IDs_val_r = np.full(n_samples,fill_value=np.nan,dtype=object)
+        
         model = Model(model_class,scaler,imputer,calmethod,calparams)
         for k,(train_index_out,test_index_out) in enumerate(iterator_outer.split(X,strat_col)): 
             X_dev, X_test = X.loc[train_index_out], X.loc[test_index_out]
@@ -767,6 +769,11 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 y_pred_best_r[test_index_out] = np.round(outputs_best_,decimals=0) if round_values else outputs_best_
             outputs_best_r[test_index_out] = outputs_best_
 
+        outputs_best_r = outputs_best_r[~np.isnan(outputs_best_r).all(axis=1)] if problem_type == 'clf' else outputs_best_r[~np.isnan(outputs_best_r)]
+        y_pred_best_r = y_pred_best_r[y_pred_best_r != np.nan]
+        y_true_r = y_true_r[~np.isnan(y_true_r)]
+        IDs_val_r = IDs_val_r[IDs_val_r != np.nan]
+
         return models_r,outputs_best_r,y_true_r,y_pred_best_r,IDs_val_r
     
     results = Parallel(n_jobs=-1 if parallel else 1)(delayed(parallel_train)(r,random_seed_train) for (r,random_seed_train) in enumerate(random_seeds_outer))
@@ -817,9 +824,9 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
     # Ascending if error, loss, or other metrics where lower is better
     ascending = any(x in scoring for x in ['error', 'loss', 'cost'])
 
-    outputs = np.empty((X.shape[0], len(np.unique(y)))) if problem_type == 'clf' else np.empty(X.shape[0])
-    y_pred = np.empty(X.shape[0])
-    y_true = np.empty(X.shape[0])
+    outputs = np.full((X.shape[0], len(np.unique(y))),fill_value=np.nan) if problem_type == 'clf' else np.full(X.shape[0],fill_value=np.nan)
+    y_pred = np.full(X.shape[0],fill_value=np.nan)
+    y_true = np.full(X.shape[0],fill_value=np.nan)
 
     for train_index, val_index in iterator.split(X, y):
         X_train = X.iloc[train_index]
@@ -839,6 +846,10 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
             y_pred[val_index] = np.round(outputs[val_index],decimals=0) if round_values else outputs[val_index]
         y_true[val_index] = y_val
     
+    y_true = y_true[~np.isnan(y_true)]
+    y_pred = y_pred[~np.isnan(y_pred)]
+    outputs = outputs[~np.isnan(outputs).all(axis=1)] if problem_type == 'clf' else outputs[~np.isnan(outputs)]
+
     if scoring == 'roc_auc':
         best_score = roc_auc_score(y_true, outputs[:, 1])
     elif scoring == 'norm_expected_cost':
@@ -856,9 +867,9 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
         scorings = {}  # Dictionary to hold scores for each feature removal
         
         for feature in features:
-            outputs = np.empty((X.shape[0], len(np.unique(y)))) if problem_type == 'clf' else np.empty(X.shape[0])
-            y_pred = np.empty(X.shape[0])
-            y_true = np.empty(X.shape[0])
+            outputs = np.full((X.shape[0], len(np.unique(y))),fill_value=np.nan) if problem_type == 'clf' else np.full(X.shape[0],fill_value=np.nan)
+            y_pred = np.full(X.shape[0],fill_value=np.nan)
+            y_true = np.full(X.shape[0],fill_value=np.nan)
             
             for train_index, val_index in iterator.split(X, y):
                 X_train = X.iloc[train_index][[f for f in features if f != feature]]
@@ -877,6 +888,10 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
                     outputs[val_index] = model.eval(X_val,problem_type)
                     y_pred[val_index] = np.round(outputs[val_index],decimals=0) if round_values else outputs[val_index]
                 y_true[val_index] = y_val
+            
+            y_true = y_true[~np.isnan(y_true)]
+            y_pred = y_pred[~np.isnan(y_pred)]
+            outputs = outputs[~np.isnan(outputs).all(axis=1)] if problem_type == 'clf' else outputs[~np.isnan(outputs)]
             
             if scoring == 'roc_auc':
                 scorings[feature] = roc_auc_score(y_true, outputs[:, 1])
@@ -984,9 +999,9 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
     if hasattr(model_class(),'probability') and problem_type == 'clf':
         params['probability'] = True
         
-    y_true = np.empty(X.shape[0])
-    y_pred = np.empty(X.shape[0])
-    outputs = np.empty((X.shape[0],len(np.unique(y)))) if problem_type == 'clf' else np.empty(X.shape[0])
+    y_true = np.full(X.shape[0],fill_value=np.nan)
+    y_pred = np.full(X.shape[0],fill_value=np.nan)
+    outputs = np.full((X.shape[0],len(np.unique(y))),fill_value=np.nan) if problem_type == 'clf' else np.full(X.shape[0],fill_value=np.nan)
     
     if isinstance(y,pd.Series):
         y = y.values
@@ -1005,6 +1020,10 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
             y_pred[test_index] = np.round(outputs[test_index],decimals=0) if round_values else outputs[test_index]
         y_true[test_index] = y[test_index]
     
+    y_true = y_true[~np.isnan(y_true)]
+    y_pred = y_pred[~np.isnan(y_pred)]
+    outputs = outputs[~np.isnan(outputs).all(axis=1)] if problem_type == 'clf' else outputs[~np.isnan(outputs)]
+
     if 'error' in scoring:
         return -eval(scoring)(y_true, outputs)
     elif scoring == 'norm_expected_cost':
