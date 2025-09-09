@@ -699,7 +699,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
         y_pred_best_r = np.full(n_samples,np.nan)
 
-        IDs_val_r = np.full(n_samples,fill_value=np.nan,dtype=object)
+        IDs_val_r = np.full(n_samples,fill_value='nan',dtype=object)
         
         model = Model(model_class,scaler,imputer,calmethod,calparams)
         for k,(train_index_out,test_index_out) in enumerate(iterator_outer.split(X,strat_col)): 
@@ -770,9 +770,9 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             outputs_best_r[test_index_out] = outputs_best_
 
         outputs_best_r = outputs_best_r[~np.isnan(outputs_best_r).all(axis=1)] if problem_type == 'clf' else outputs_best_r[~np.isnan(outputs_best_r)]
-        y_pred_best_r = y_pred_best_r[y_pred_best_r != np.nan]
+        y_pred_best_r = y_pred_best_r[~np.isnan(y_pred_best_r)]
         y_true_r = y_true_r[~np.isnan(y_true_r)]
-        IDs_val_r = IDs_val_r[IDs_val_r != np.nan]
+        IDs_val_r = IDs_val_r[IDs_val_r != 'nan']
 
         return models_r,outputs_best_r,y_true_r,y_pred_best_r,IDs_val_r
     
