@@ -31,11 +31,11 @@ class Model():
         self.calparams = calparams
 
     def train(self,X,y):   
-        features = X.columns
         
-        X_t = pd.DataFrame(columns=features,data=self.scaler.fit_transform(X.values)) if self.scaler is not None else X
-        X_t = pd.DataFrame(columns=features,data=self.imputer.fit_transform(X_t.values)) if self.imputer is not None else X_t
+        X_t = self.scaler.fit_transform(X.values) if self.scaler is not None else X.values
+        X_t = self.imputer.fit_transform(X_t) if self.imputer is not None else X_t
 
+        X_t = pd.DataFrame(data=X_t,columns=X.columns)
         params = self.model.get_params()
         if 'n_estimators' in params.keys():
             params['n_estimators'] = int(params['n_estimators']) if params['n_estimators'] is not None else None
@@ -55,9 +55,11 @@ class Model():
         
     def eval(self,X,problem_type='clf'):
         
-        features = X.columns
-        X_t = pd.DataFrame(columns=features,data=self.scaler.transform(X.values)) if self.scaler is not None else X
-        X_t = pd.DataFrame(columns=features,data=self.imputer.transform(X_t.values)) if self.imputer is not None else X_t
+        X_t = self.scaler.transform(X.values) if self.scaler is not None else X.values
+        X_t = self.imputer.transform(X_t) if self.imputer is not None else X_t
+        
+        X_t = pd.DataFrame(data=X_t,columns=X.columns)
+
         if problem_type == 'clf':
             prob = self.model.predict_proba(X_t)
             prob = np.clip(prob,1e-2,1-1e-2)
@@ -92,10 +94,12 @@ def _build_path(base_dir, task, dimension, y_label, random_seed_test, file_name,
     hyp_opt_str = "hyp_opt" if config["n_iter"] else ""
     feature_sel_str = "feature_selection" if bool(config['feature_selection']) else ""
     outlier_str = "filter_outliers" if config['filter_outliers'] and config["problem_type"] == 'reg' else ''
+    round_str = "rounded" if config["round_values"] else ""
+    cut_str = "cut" if config["cut_values"] > 0 else ""
     shuffle_str = "shuffle" if config["shuffle_labels"] else ""
 
     return Path(base_dir,task, dimension, config['scaler_name'], config['kfold_folder'], 
-           y_label, config["stat_folder"], 'bayes' if bayes else '', scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, shuffle_str,random_seed_test, file_name)
+           y_label, config["stat_folder"], 'bayes' if bayes else '', scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, round_str, cut_str,shuffle_str,random_seed_test, file_name)
 
 def _load_data(results_dir, task, dimension, y_label, model_type, random_seed_test, config, bayes=False,scoring=None):
     """Loads model outputs and true labels for a given configuration."""
@@ -674,7 +678,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
     if (cmatrix is None) & (problem_type == 'clf'):
         cmatrix = CostMatrix.zero_one_costs(K=len(np.unique(y)))
 
-    features = X.columns
+    features = X.columns.tolist()  # once, near the top
     
     iterator_inner.random_state = 42
 
@@ -717,8 +721,8 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             #imputer_ = imputer().fit(X_dev)
 
             #X_dev = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_dev.columns,data=scaler_.transform(X_dev))))
-            X_dev = pd.DataFrame(columns=X.columns,data=X_dev)
-            X_test = pd.DataFrame(columns=X.columns,data=X_test)
+            #X_dev  = X_dev.reindex(columns=features)
+            #X_test = X_test.reindex(columns=features)
             #X_test = pd.DataFrame(columns=X.columns,data=imputer_.transform(pd.DataFrame(columns=X_test.columns,data=scaler_.transform(X_test))))
             print(f'Random seed {r+1}, Fold {k+1}')
             
@@ -1067,3 +1071,12 @@ def select_best_models(metrics,scoring='roc_auc',problem_type='clf'):
 
     best = css(metrics,scoring,problem_type)
     return best
+
+def filter_outliers(data,parametric=True,n_sd=3):
+    for feature in data.columns:
+        if parametric:
+            data = data[np.abs(data[feature]-np.nanmean(data[feature]))/np.nanstd(data[feature]) < n_sd]
+        else:
+            data = data[np.abs(data[feature] - np.nanmedian(data[feature])/np.abs(np.nanpercentile(data[feature],q=75) - np.nanpercentile(data[feature],q=25))) < 1.5]
+    
+    return data
