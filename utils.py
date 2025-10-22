@@ -248,7 +248,10 @@ def generate_feature_sets(features, config, data_shape):
     Generate a list of feature subsets for evaluation.
     Either compute all combinations up to a maximum length or generate a random sample.
     """
-    n_possible = int(config["feature_sample_ratio"] * data_shape[0] * (1 - config["test_size"]) * ((config["n_folds"] - 1) / config["n_folds"])) - 1
+    if (config["n_folds"] < 1) & (config["n_folds"] > 0):
+        n_possible = int(config["feature_sample_ratio"] * data_shape[0] * (1 - config["test_size"]) * (1 - config["n_folds"])) - 1
+    else:
+        n_possible = int(config["feature_sample_ratio"] * data_shape[0] * (1 - config["test_size"]) * ((config["n_folds"] - 1) / config["n_folds"])) - 1
     # Determine total number of combinations.
     num_comb = sum(math.comb(len(features), k+1) for k in range(len(features)-1))
     feature_sets = []
@@ -336,7 +339,12 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
     model_params = pd.DataFrame(model_params, index=[0])
 
     n_seeds = len(random_seeds_train)
-    n_samples, n_features = X.shape
+    if hasattr(iterator,'test_size'):
+        n_samples = int(X.shape[0]*iterator.test_size)
+    else:
+        n_samples = X.shape[0]
+
+    n_features = X.shape[1]
     
     n_classes = len(np.unique(y))
 
@@ -355,18 +363,33 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
             model = Model(model_class(**params), scaler, imputer,calmethod,calparams)
             if hasattr(model.model, 'random_state'):
                 model.model.random_state = 42
-            
-            X_dev[r, test_index] = X.iloc[test_index]
-            y_dev[r, test_index] = y.iloc[test_index].values.squeeze()
-            IDs_dev[r, test_index] = IDs[test_index]
-
-            model.train(X.iloc[train_index][feature_set], y.iloc[train_index])
-
-            outputs_dev[r, test_index] = model.eval(X.iloc[test_index][feature_set], problem_type)
-            if calmethod is not None:
-                cal_outputs_dev[r, test_index],_ = model.calibrate(outputs_dev[r,test_index],y_dev[r,test_index])
-            else:
-                cal_outputs_dev[r, test_index] = outputs_dev[r, test_index]
+                
+            X_train = X.iloc[train_index]
+            X_test = X.iloc[test_index]
+            y_train = y.iloc[train_index].values.squeeze()
+            y_test = y.iloc[test_index].values.squeeze()
+            IDs_test = IDs[test_index]
+            try:
+                X_dev[r, test_index] = X_test
+                y_dev[r, test_index] = y_test
+                IDs_dev[r, test_index] = IDs_test
+                X_train = X_train.reset_index(drop=True)
+                X_test = X_test.reset_index(drop=True)
+                IDs_dev[r, test_index] = IDs_test
+            except:
+                X_dev[r, :] = X.iloc[test_index]
+                y_dev[r, :] = y[test_index].squeeze()
+                IDs_dev[r, :] = IDs[test_index]
+                
+            model.train(X_train[feature_set], y_train)
+            try:
+                outputs_dev[r, test_index] = model.eval(X_test[feature_set], problem_type)
+                if calmethod is not None:
+                    cal_outputs_dev[r, test_index],_ = model.calibrate(outputs_dev[r,test_index],y_dev[r,test_index])
+                else:
+                    cal_outputs_dev[r, test_index] = outputs_dev[r, test_index]
+            except:
+                outputs_dev[r, :] = model.eval(X_test[feature_set], problem_type)
 
     if problem_type == 'clf':
         model_params['threshold'] = threshold
@@ -435,11 +458,16 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
         hyperp['random_state'] = 42
     
     all_models = pd.DataFrame(columns=list(hyperp.columns) + list(features),index=range(hyperp.shape[0]*len(feature_sets)*len(thresholds)))
-    all_outputs = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], len(np.unique(y)))) if problem_type == 'clf' else np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0]))
+    if hasattr(iterator,'test_size'):
+        n_samples = int(X.shape[0]*iterator.test_size)
+    else:
+        n_samples = X.shape[0]
+    all_outputs = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), n_samples, len(np.unique(y)))) if problem_type == 'clf' else np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), n_samples))
+
     all_cal_outputs = np.empty_like(all_outputs)
-    X_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0], X.shape[1]))
-    y_true = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0]))
-    IDs_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), X.shape[0]), dtype=object)
+    X_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), n_samples, X.shape[1]))
+    y_true = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), n_samples))
+    IDs_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), n_samples), dtype=object)
 
     def process_combination(c,f,t,problem_type,calmethod,calparams):
         params = hyperp.loc[c, :].to_dict()
