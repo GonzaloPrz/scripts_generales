@@ -210,7 +210,11 @@ def get_metrics_reg(y_scores,y_true,metrics_names):
     """
     metrics = dict((metric,np.nan) for metric in metrics_names)	
     for metric in metrics_names:
-        metrics[metric] = eval(metric)(y_true=y_true,y_pred=y_scores)
+
+        try:
+            metrics[metric] = eval(metric)(y_true=y_true,y_pred=y_scores)
+        except:
+            metrics[metric] = eval(f'{metric}_score')(y_true=y_true,y_pred=y_scores)
 
     return metrics
 
