@@ -29,11 +29,17 @@ class Model():
         self.imputer = imputer() if imputer is not None else None
         self.calmethod = calmethod
         self.calparams = calparams
+        self.coefficients = None
 
-    def train(self,X,y):   
+    def train(self,X,y,covariates=None,fill_na=None):   
         
         X_t = self.scaler.fit_transform(X.values) if self.scaler is not None else X.values
-        X_t = self.imputer.fit_transform(X_t) if self.imputer is not None else X_t
+        
+        if fill_na is not None:
+            nan_mask = np.isnan(X_t)
+            X_t[nan_mask] = fill_na
+        else:
+            X_t = self.imputer.fit_transform(X_t) if self.imputer is not None else X_t
 
         X_t = pd.DataFrame(data=X_t,columns=X.columns)
         params = self.model.get_params()
@@ -51,12 +57,28 @@ class Model():
         self.model.set_params(**params)
         if hasattr(self.model,'precompute'):
             self.model.precompute = True
+        
+        if covariates:
+            
+            X_t = pd.concat((X_t,covariates))
+            X_t['y'] = y
+
+            y, coefficients = regress_out_fn(data=covariates,target_column='y',covariate_columns=list(set(covariates.columns) - set(['y'])))
+            self.coefficients = coefficients
+
+            X_t.drop(labels=covariates.columns + ['y'])
+
         self.model.fit(X_t,y)
         
-    def eval(self,X,problem_type='clf'):
+    def eval(self,X,problem_type='clf',covariates=None,fill_na=None):
         
         X_t = self.scaler.transform(X.values) if self.scaler is not None else X.values
-        X_t = self.imputer.transform(X_t) if self.imputer is not None else X_t
+        
+        if fill_na is not None:
+            nan_mask = np.isnan(X_t)
+            X_t[nan_mask] = fill_na
+        else:
+            X_t = self.imputer.transform(X_t) if self.imputer is not None else X_t
         
         X_t = pd.DataFrame(data=X_t,columns=X.columns)
 
@@ -66,6 +88,14 @@ class Model():
             score = np.log(prob)
         else:
             score = self.model.predict(X_t)
+
+            if covariates is not None:
+                X_t = pd.concat((X_t,covariates))
+                
+                intercept = np.ones((X_t.shape[0], 1), dtype=float)
+                design_matrix = np.column_stack((intercept, X[covariates.columns]))
+                
+                score = score - design_matrix @ self.coefficients
 
         score_filled = score.copy()
 
@@ -98,24 +128,53 @@ def _build_path(base_dir, task, dimension, y_label, random_seed_test, file_name,
     cut_str = "cut" if config["cut_values"] > 0 else ""
     shuffle_str = "shuffle" if config["shuffle_labels"] else ""
 
-    return Path(base_dir,task, dimension, config['scaler_name'], config['kfold_folder'], 
-           y_label, config["stat_folder"], 'bayes' if bayes else '', scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, round_str, cut_str,shuffle_str,random_seed_test, file_name)
+    return Path(base_dir,task, dimension, config['kfold_folder'], 
+           y_label, config["stat_folder"], scoring if bayes else '', hyp_opt_str, feature_sel_str, outlier_str, round_str, cut_str,shuffle_str,random_seed_test, file_name)
 
 def _load_data(results_dir, task, dimension, y_label, model_type, random_seed_test, config, bayes=False,scoring=None):
     """Loads model outputs and true labels for a given configuration."""
     path_kwargs = {'base_dir': results_dir,'task': task, 'dimension': dimension, 'y_label': y_label, 'random_seed_test': random_seed_test}
+
+    if 'round_values' not in config:
+        config["round_values"] = False
     
-    outputs_path = _build_path(**path_kwargs,file_name=f'outputs_{model_type}_calibrated.pkl' if config["calibrate"] else f'outputs_{model_type}.pkl',config=config,bayes=bayes,scoring=scoring)
-    y_dev_path = _build_path(**path_kwargs, file_name='y_dev.pkl',config=config,bayes=bayes,scoring=scoring)
+    if "cut_values" not in config:
+        config["cut_values"] = 0
+
+    IDs_path = _build_path(**path_kwargs, file_name=f'IDs_dev.npy',config=config,bayes=bayes,scoring=scoring)    
+    outputs_path = _build_path(**path_kwargs,file_name=f'outputs_{model_type}_calibrated.npy' if config["calibrate"] else f'outputs_{model_type}.npy',config=config,bayes=bayes,scoring=scoring)
+    y_dev_path = _build_path(**path_kwargs, file_name=f'y_dev.npy',config=config,bayes=bayes,scoring=scoring)
+
+    with open(IDs_path, "rb") as f:
+        # Load and select the specific model's outputs
+        IDs_dev = np.load(f,allow_pickle=True)
 
     with open(outputs_path, "rb") as f:
         # Load and select the specific model's outputs
-        outputs = pickle.load(f)
+        outputs_dev = np.load(f,allow_pickle=True)
     
     with open(y_dev_path, "rb") as f:
-        y_dev = pickle.load(f)
+        y_dev = np.load(f,allow_pickle=True)
+
+    IDs_path = _build_path(**path_kwargs, file_name=f'IDs_test.npy',config=config,bayes=bayes,scoring=scoring)    
+    outputs_path = _build_path(**path_kwargs,file_name=f'outputs_test_{model_type}_calibrated.npy' if config["calibrate"] else f'outputs_test_{model_type}.npy',config=config,bayes=bayes,scoring=scoring)
+    y_test_path = _build_path(**path_kwargs, file_name=f'y_test.npy',config=config,bayes=bayes,scoring=scoring)
+
+    try:
+        with open(IDs_path, "rb") as f:
+            # Load and select the specific model's outputs
+            IDs_test = np.load(f,allow_pickle=True)
+
+        with open(outputs_path, "rb") as f:
+            # Load and select the specific model's outputs
+            outputs_test = np.load(f,allow_pickle=True)
         
-    return outputs, y_dev
+        with open(y_test_path, "rb") as f:
+            y_test = np.load(f,allow_pickle=True)
+    except:
+        IDs_test, outputs_test, y_test = None, None, None
+
+    return IDs_dev, outputs_dev, y_dev, IDs_test, outputs_test, y_test
 
 def _calculate_metrics(indices, outputs, y, metrics_names, prob_type, cost_matrix):
     """
@@ -285,7 +344,7 @@ def generate_feature_sets(features, config, data_shape):
     feature_sets = [list(feature_set) for feature_set in feature_sets]
     return feature_sets
 
-def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, threshold, iterator, random_seeds_train, IDs, problem_type='clf',calmethod=None,calparams=None):
+def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, threshold, iterator, random_seeds_train, IDs, problem_type='clf',calmethod=None,calparams=None,fill_na=None):
     """
     Cross-validation function to train and evaluate a model with specified parameters, 
     feature engineering, and evaluation metrics. Supports both classification and regression.
@@ -385,7 +444,7 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
                 y_dev[r, :] = y[test_index].squeeze()
                 IDs_dev[r, :] = IDs[test_index]
                 
-            model.train(X_train[feature_set], y_train)
+            model.train(X_train[feature_set], y_train,fill_na)
             try:
                 outputs_dev[r, test_index] = model.eval(X_test[feature_set], problem_type)
                 if calmethod is not None:
@@ -474,7 +533,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
     IDs_dev = np.empty((hyperp.shape[0]*len(feature_sets)*len(thresholds), len(random_seeds_train), n_samples), dtype=object)
 
     def process_combination(c,f,t,problem_type,calmethod,calparams):
-        params = hyperp.loc[c, :].to_dict()
+        params = hyperp.iloc[c, :].to_dict()
         return c, f, t, CV(model, params, scaler, imputer, X, y, feature_sets[f],features, thresholds[t], iterator, [int(seed) for seed in random_seeds_train], IDs, problem_type,calmethod,calparams)
         
     if parallel:
@@ -498,7 +557,7 @@ def CVT(model, scaler, imputer, X, y, iterator, random_seeds_train, hyperp, feat
     
     return all_models, all_outputs, all_cal_outputs, X_dev[0], y_true[0], IDs_dev[0]
 
-def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_type='clf'):
+def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_type='clf',fill_na=None):
     
     """
     Tests a model on specified development and test datasets, using optional bootstrapping for 
@@ -536,9 +595,9 @@ def test_model(model_class,params,scaler,imputer, X_dev, y_dev, X_test,problem_t
         X_test = pd.DataFrame(X_test)
 
     model = Model(model_class(**params),scaler,imputer)
-    model.train(X_dev, y_dev)
+    model.train(X_dev, y_dev,fill_na=fill_na)
 
-    outputs = model.eval(X_test, problem_type)
+    outputs = model.eval(X_test, problem_type,fill_na=fill_na)
 
     return outputs
 
@@ -576,6 +635,7 @@ def compute_metrics(model_index, outputs, y_dev, metrics_names, n_boot, problem_
 
             try:
                 if metric == 'roc_auc':
+
                     metric_result += [roc_auc_score(yt,ys[:,1])]
                 elif metric == 'norm_cross_entropy':
                     metric_result += [LogLoss(log_probs=torch.tensor(ys), labels=torch.tensor(np.array(yt, dtype=int)), priors=torch.tensor(priors)).detach().numpy() if priors is not None else LogLoss(log_probs=torch.tensor(ys), labels=torch.tensor(np.array(yt, dtype=int))).detach().numpy()]
@@ -614,7 +674,7 @@ def compute_metrics(model_index, outputs, y_dev, metrics_names, n_boot, problem_
     for metric in metrics_names:
         metrics_result[metric] = results[metric]
     '''
-    return ci_metrics
+    return ci_metrics, fpr, tpr
 
 def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmatrix=None,priors=None,threshold=None,problem_type='clf',bayesian=False):
     
@@ -651,7 +711,7 @@ def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmat
         
     return all_metrics, sorted_IDs
 
-def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,strat_col,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True,calparams=None,calmethod=None,round_values=False):
+def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,strat_col,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True,calparams=None,calmethod=None,round_values=False,covariates=None,fill_na=None):
     
     """
     Conducts nested cross-validation with recursive feature elimination (RFE) and hyperparameter tuning 
@@ -741,7 +801,13 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
         for k,(train_index_out,test_index_out) in enumerate(iterator_outer.split(X,strat_col)): 
             X_dev, X_test = X.loc[train_index_out], X.loc[test_index_out]
             y_dev, y_test = y[train_index_out], y[test_index_out]
-            
+            if covariates is not None:
+                covariates_dev= covariates.iloc[train_index_out]
+                covariates_test = covariates.iloc[test_index_out]
+            else:
+                covariates_dev = None
+                covariates_test = None
+
             X_dev = X_dev.reset_index(drop=True)
             X_test = X_test.reset_index(drop=True)
 
@@ -759,7 +825,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             print(f'Random seed {r+1}, Fold {k+1}')
             
             if n_iter > 0:
-                best_params, best_score = tuning(model_class,scaler,imputer,X_dev,y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams,round_values=round_values)
+                best_params, best_score = tuning(model_class,scaler,imputer,X_dev,y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams,round_values=round_values,covariates=covariates,fill_na=fill_na)
             else:
                 best_params = model_class().get_params() 
 
@@ -778,7 +844,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 best_params['probability'] = True
 
             if feature_selection:
-                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev.values if isinstance(y_dev,pd.Series) else y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,round_values=round_values)
+                best_features, best_score = rfe(Model(model_class(**best_params),scaler,imputer,calmethod,calparams),X_dev,y_dev.values if isinstance(y_dev,pd.Series) else y_dev,iterator_inner,scoring,problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,round_values=round_values,covariates=covariates,fill_na=fill_na)
             else:
                 best_features, best_score = X.columns, np.nan
 
@@ -789,10 +855,10 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             models_r.loc[len(models_r.index),:] = append_dict
 
             model = Model(model_class(**best_params),scaler,imputer,calmethod,calparams)
-            model.train(X_dev[best_features],y_dev)
+            model.train(X_dev[best_features],y_dev,covariates_dev,fill_na)
             
             if problem_type == 'clf':
-                outputs_best_ = model.eval(X_test[best_features],problem_type)
+                outputs_best_ = model.eval(X_test[best_features],problem_type,covariates_test,fill_na)
                 if isinstance(threshold,float) & (len(np.unique(y)) == 2):
                     y_pred_best_ = [1 if x > threshold else 0 for x in outputs_best_r[test_index_out][:,1]]
                 else:
@@ -801,7 +867,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
                 y_pred_best_r[test_index_out] = np.round(y_pred_best_,decimals=0) if round_values else y_pred_best_
 
             else:
-                outputs_best_ = model.eval(X_test[best_features],problem_type)
+                outputs_best_ = model.eval(X_test[best_features],problem_type,covariates_test,fill_na)
                 y_pred_best_r[test_index_out] = np.round(outputs_best_,decimals=0) if round_values else outputs_best_
             outputs_best_r[test_index_out] = outputs_best_
 
@@ -821,7 +887,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
     return all_models,outputs_best,y_true,y_pred_best,IDs_val
 
-def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=None,priors=None,threshold=None,round_values=False):
+def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=None,priors=None,threshold=None,round_values=False,covariates=None,fill_na=None):
     
     """
     Performs recursive feature elimination (RFE) to select the best subset of features based on a 
@@ -869,19 +935,25 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
         X_val = X.iloc[val_index]
         y_train, y_val = y[train_index], y[val_index]
         
-        model.train(X_train, y_train)
+        if covariates is not None:
+            covariates_train = covariates.iloc[train_index]
+            covariates_val = covariates.iloc[val_index]
+        else:
+            covariates_train, covariates_val = None, None
+
+        model.train(X_train, y_train, covariates_train,fill_na)
         
         if problem_type == 'clf':
-            outputs[val_index] = model.eval(X_val,problem_type)
+            outputs[val_index] = model.eval(X_val,problem_type,covariates_val,fill_na)
             if isinstance(threshold,float) & (len(np.unique(y)) == 2):
                 y_pred[val_index] = [1 if x > threshold else 0 for x in outputs[:,1]]
             else:
                 y_pred[val_index] = bayes_decisions(scores=outputs[val_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
         else:
-            outputs[val_index] = model.eval(X_val,problem_type)
+            outputs[val_index] = model.eval(X_val,problem_type,covariates_val,fill_na)
             y_pred[val_index] = np.round(outputs[val_index],decimals=0) if round_values else outputs[val_index]
         y_true[val_index] = y_val
-    
+        
     y_true = y_true[~np.isnan(y_true)]
     y_pred = y_pred[~np.isnan(y_pred)]
     outputs = outputs[~np.isnan(outputs).all(axis=1)] if problem_type == 'clf' else outputs[~np.isnan(outputs)]
@@ -911,20 +983,25 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
                 X_train = X.iloc[train_index][[f for f in features if f != feature]]
                 X_val = X.iloc[val_index][[f for f in features if f != feature]]
                 y_train, y_val = y[train_index], y[val_index]
-                
-                model.train(X_train, y_train)
+                if covariates is not None:
+                    covariates_train = covariates.iloc[train_index]
+                    covariates_val = covariates.iloc[val_index]
+                else:
+                    covariates_train = None
+
+                model.train(X_train, y_train, covariates_train)
                 
                 if problem_type == 'clf':
-                    outputs[val_index] = model.eval(X_val,problem_type)
+                    outputs[val_index] = model.eval(X_val,problem_type,covariates_val,fill_na)
                     if isinstance(threshold,float) & (len(np.unique(y)) == 2):
                         y_pred[val_index] = [1 if x > threshold else 0 for x in outputs[:,1]]
                     else:
                         y_pred[val_index] = bayes_decisions(scores=outputs[val_index],costs=cmatrix,priors=priors,score_type='log_posteriors')[0]
                 else:
-                    outputs[val_index] = model.eval(X_val,problem_type)
+                    outputs[val_index] = model.eval(X_val,problem_type,covariates_val,fill_na)
                     y_pred[val_index] = np.round(outputs[val_index],decimals=0) if round_values else outputs[val_index]
                 y_true[val_index] = y_val
-            
+                
             y_true = y_true[~np.isnan(y_true)]
             y_pred = y_pred[~np.isnan(y_pred)]
             outputs = outputs[~np.isnan(outputs).all(axis=1)] if problem_type == 'clf' else outputs[~np.isnan(outputs)]
@@ -966,11 +1043,11 @@ def new_best(old,new,greater=True):
     else:
         return new < old
 
-def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42,calmethod=None,calparams=None,round_values=False):
+def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42,calmethod=None,calparams=None,round_values=False,covariates=None,fill_na=None):
     
     def objective(**params):
         return scoring_bo(params, model, scaler, imputer, X, y, iterator, scoring, problem_type, 
-                          cmatrix, priors, threshold,calmethod,calparams,round_values)
+                          cmatrix, priors, threshold,calmethod,calparams,round_values,covariates,fill_na)
     
     search = BayesianOptimization(f=objective,pbounds=hyperp_space,verbose=2,random_state=random_state)
     #search = BayesSearchCV(model(),hyperp_space,scoring=lambda params,X,y: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),n_iter=50,cv=None,random_state=42,verbose=2)
@@ -984,7 +1061,7 @@ def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=5
             best_params[param] = int(best_params[param])
     return best_params, search.max['target']
 
-def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None,calmethod=None,calparams=None,round_values=False):
+def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None,calmethod=None,calparams=None,round_values=False,covariates=None,fill_na=None):
 
     """
     Evaluates a model's performance using cross-validation and a specified scoring metric, 
@@ -1044,8 +1121,14 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
 
     for train_index, test_index in iterator.split(X,y):
         model = Model(model_class(**params),scaler,imputer,calmethod,calparams)
-        model.train(X.loc[train_index],y[train_index])
-        outputs[test_index] = model.eval(X.loc[test_index],problem_type)
+        if covariates is not None:
+            covariates_train = covariates.iloc[train_index]
+            covariates_val = covariates.iloc[test_index]
+        else:
+            covariates_train, covariates_val = None, None
+
+        model.train(X.loc[train_index],y[train_index],covariates_train,fill_na)
+        outputs[test_index] = model.eval(X.loc[test_index],problem_type,covariates_val,fill_na)
 
         if problem_type == 'clf':
             if isinstance(threshold,float) & (len(np.unique(y)) == 2):
@@ -1112,3 +1195,32 @@ def filter_outliers(data,parametric=True,n_sd=3):
             data = data[np.abs(data[feature] - np.nanmedian(data[feature])/np.abs(np.nanpercentile(data[feature],q=75) - np.nanpercentile(data[feature],q=25))) < 1.5]
     
     return data
+
+def regress_out_fn(
+    data: pd.DataFrame,
+    target_column: str,
+    covariate_columns: list[str],
+):
+    """
+    Ajusta y = beta0 + betaX y devuelve los residuos (y - y_hat).
+    """
+    covariate_matrix = data[covariate_columns].to_numpy(dtype=float)
+    target_vector = data[target_column].to_numpy(dtype=float)
+
+    intercept = np.ones((covariate_matrix.shape[0], 1), dtype=float)
+    design_matrix = np.column_stack((intercept, covariate_matrix))
+
+    coefficients, _, _, _ = np.linalg.lstsq(
+        design_matrix,
+        target_vector,
+        rcond=None,
+    )
+
+    fitted_values = design_matrix @ coefficients
+    residuals = target_vector - fitted_values
+
+    return pd.Series(
+        residuals,
+        index=data.index,
+        name=f"{target_column}_residual",
+    ), coefficients
