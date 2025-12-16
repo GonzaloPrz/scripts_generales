@@ -1,5 +1,7 @@
 import numpy as np
 from sklearn.metrics import *
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
 import torch,itertools
 import pandas as pd
 from sklearn.svm import SVR, SVC
@@ -16,7 +18,7 @@ from psrcal.calibration import *
 
 from joblib import Parallel, delayed
 
-import math, pickle
+import math
 
 from bayes_opt import BayesianOptimization
 
@@ -29,9 +31,9 @@ class Model():
         self.imputer = imputer() if imputer is not None else None
         self.calmethod = calmethod
         self.calparams = calparams
-        self.coefficients = None
+        self.regress_out_model = None
 
-    def train(self,X,y,covariates=None,fill_na=None):   
+    def train(self,X,y,covariates=None,fill_na=None,regress_out_method='linear'):   
         
         X_t = self.scaler.fit_transform(X.values) if self.scaler is not None else X.values
         
@@ -60,13 +62,12 @@ class Model():
         
         if covariates:
             
-            X_t = pd.concat((X_t,covariates))
-            X_t['y'] = y
+            self.regress_out_model = dict((feature,None) for feature in X_t.columns)
 
-            y, coefficients = regress_out_fn(data=covariates,target_column='y',covariate_columns=list(set(covariates.columns) - set(['y'])))
-            self.coefficients = coefficients
-
-            X_t.drop(labels=covariates.columns + ['y'])
+            for feature in X_t.columns:
+                feature_, model = regress_out_fn(data=pd.concat(X_t,covariates,axis=1),target_column=feature,covariate_columns=covariates.columns,method=regress_out_method)
+                X_t[feature] = feature_
+                self.regress_out_model[feature] = model
 
         self.model.fit(X_t,y)
         
@@ -87,15 +88,12 @@ class Model():
             prob = np.clip(prob,1e-2,1-1e-2)
             score = np.log(prob)
         else:
-            score = self.model.predict(X_t)
-
             if covariates is not None:
-                X_t = pd.concat((X_t,covariates))
                 
-                intercept = np.ones((X_t.shape[0], 1), dtype=float)
-                design_matrix = np.column_stack((intercept, X[covariates.columns]))
-                
-                score = score - design_matrix @ self.coefficients
+                for feature in X_t.columns:
+                    X_t[feature] = X_t[feature] - self.regress_out_model[feature].predict(covariates)
+
+            score = self.model.predict(X_t)
 
         score_filled = score.copy()
 
@@ -444,7 +442,7 @@ def CV(model_class, params, scaler, imputer, X, y, feature_set,all_features, thr
                 y_dev[r, :] = y[test_index].squeeze()
                 IDs_dev[r, :] = IDs[test_index]
                 
-            model.train(X_train[feature_set], y_train,fill_na)
+            model.train(X_train[feature_set],y_train,fill_na)
             try:
                 outputs_dev[r, test_index] = model.eval(X_test[feature_set], problem_type)
                 if calmethod is not None:
@@ -711,8 +709,7 @@ def get_metrics_bootstrap(samples, targets, IDs, metrics_names, n_boot=2000,cmat
         
     return all_metrics, sorted_IDs
 
-def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,strat_col,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True,calparams=None,calmethod=None,round_values=False,covariates=None,fill_na=None):
-    
+def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inner,strat_col,random_seeds_outer,hyperp_space,IDs,init_points=5,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,feature_selection=True,parallel=True,calparams=None,calmethod=None,round_values=False,covariates=None,fill_na=None,regress_out_method='linear'):
     """
     Conducts nested cross-validation with recursive feature elimination (RFE) and hyperparameter tuning 
     to select and evaluate the best model configuration. Supports classification and regression tasks.
@@ -825,7 +822,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             print(f'Random seed {r+1}, Fold {k+1}')
             
             if n_iter > 0:
-                best_params, best_score = tuning(model_class,scaler,imputer,X_dev,y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams,round_values=round_values,covariates=covariates,fill_na=fill_na)
+                best_params, best_score = tuning(model_class,scaler,imputer,X_dev,y_dev,hyperp_space,iterator_inner,init_points=init_points,n_iter=n_iter,scoring=scoring,problem_type=problem_type,cmatrix=cmatrix,priors=priors,threshold=threshold,calmethod=calmethod,calparams=calparams,round_values=round_values,covariates=covariates,fill_na=fill_na,regress_out_method=regress_out_method)
             else:
                 best_params = model_class().get_params() 
 
@@ -855,7 +852,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
             models_r.loc[len(models_r.index),:] = append_dict
 
             model = Model(model_class(**best_params),scaler,imputer,calmethod,calparams)
-            model.train(X_dev[best_features],y_dev,covariates_dev,fill_na)
+            model.train(X_dev[best_features],y_dev,covariates_dev,fill_na,regress_out_method)
             
             if problem_type == 'clf':
                 outputs_best_ = model.eval(X_test[best_features],problem_type,covariates_test,fill_na)
@@ -887,7 +884,7 @@ def nestedCVT(model_class,scaler,imputer,X,y,n_iter,iterator_outer,iterator_inne
 
     return all_models,outputs_best,y_true,y_pred_best,IDs_val
 
-def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=None,priors=None,threshold=None,round_values=False,covariates=None,fill_na=None):
+def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=None,priors=None,threshold=None,round_values=False,covariates=None,fill_na=None,regress_out_method='linear'):
     
     """
     Performs recursive feature elimination (RFE) to select the best subset of features based on a 
@@ -941,7 +938,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
         else:
             covariates_train, covariates_val = None, None
 
-        model.train(X_train, y_train, covariates_train,fill_na)
+        model.train(X_train, y_train, covariates_train,fill_na,regress_out_method)
         
         if problem_type == 'clf':
             outputs[val_index] = model.eval(X_val,problem_type,covariates_val,fill_na)
@@ -989,7 +986,7 @@ def rfe(model, X, y, iterator, scoring='roc_auc', problem_type='clf',cmatrix=Non
                 else:
                     covariates_train = None
 
-                model.train(X_train, y_train, covariates_train)
+                model.train(X_train, y_train, covariates_train,fill_na,regress_out_method)
                 
                 if problem_type == 'clf':
                     outputs[val_index] = model.eval(X_val,problem_type,covariates_val,fill_na)
@@ -1043,11 +1040,11 @@ def new_best(old,new,greater=True):
     else:
         return new < old
 
-def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42,calmethod=None,calparams=None,round_values=False,covariates=None,fill_na=None):
+def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=50,scoring='roc_auc',problem_type='clf',cmatrix=None,priors=None,threshold=None,random_state=42,calmethod=None,calparams=None,round_values=False,covariates=None,fill_na=None,regress_out_method='linear'):
     
     def objective(**params):
         return scoring_bo(params, model, scaler, imputer, X, y, iterator, scoring, problem_type, 
-                          cmatrix, priors, threshold,calmethod,calparams,round_values,covariates,fill_na)
+                          cmatrix, priors, threshold,calmethod,calparams,round_values,covariates,fill_na,regress_out_method=regress_out_method)
     
     search = BayesianOptimization(f=objective,pbounds=hyperp_space,verbose=2,random_state=random_state)
     #search = BayesSearchCV(model(),hyperp_space,scoring=lambda params,X,y: scoring_bo(params,model,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix,priors,threshold),n_iter=50,cv=None,random_state=42,verbose=2)
@@ -1061,7 +1058,7 @@ def tuning(model,scaler,imputer,X,y,hyperp_space,iterator,init_points=5,n_iter=5
             best_params[param] = int(best_params[param])
     return best_params, search.max['target']
 
-def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None,calmethod=None,calparams=None,round_values=False,covariates=None,fill_na=None):
+def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_type,cmatrix=None,priors=None,threshold=None,calmethod=None,calparams=None,round_values=False,covariates=None,fill_na=None,regress_out_method='linear'):
 
     """
     Evaluates a model's performance using cross-validation and a specified scoring metric, 
@@ -1127,7 +1124,7 @@ def scoring_bo(params,model_class,scaler,imputer,X,y,iterator,scoring,problem_ty
         else:
             covariates_train, covariates_val = None, None
 
-        model.train(X.loc[train_index],y[train_index],covariates_train,fill_na)
+        model.train(X.loc[train_index],y[train_index],covariates_train,fill_na,regress_out_method)
         outputs[test_index] = model.eval(X.loc[test_index],problem_type,covariates_val,fill_na)
 
         if problem_type == 'clf':
@@ -1200,27 +1197,22 @@ def regress_out_fn(
     data: pd.DataFrame,
     target_column: str,
     covariate_columns: list[str],
+    method = 'linear'
 ):
     """
     Ajusta y = beta0 + betaX y devuelve los residuos (y - y_hat).
     """
     covariate_matrix = data[covariate_columns].to_numpy(dtype=float)
     target_vector = data[target_column].to_numpy(dtype=float)
+    model = LinearRegression(random_state=42) if method == 'linear' else RandomForestRegressor(random_state=42)
+    
+    model.fit(covariate_matrix,target_vector)
 
-    intercept = np.ones((covariate_matrix.shape[0], 1), dtype=float)
-    design_matrix = np.column_stack((intercept, covariate_matrix))
-
-    coefficients, _, _, _ = np.linalg.lstsq(
-        design_matrix,
-        target_vector,
-        rcond=None,
-    )
-
-    fitted_values = design_matrix @ coefficients
+    fitted_values = model.predict(covariate_matrix)
     residuals = target_vector - fitted_values
 
     return pd.Series(
         residuals,
         index=data.index,
         name=f"{target_column}_residual",
-    ), coefficients
+    ), model
